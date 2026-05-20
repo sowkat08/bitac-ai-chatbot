@@ -1,0 +1,6 @@
+pinecone
+langchain
+langchain-pinecone
+langchain-community
+langchain-huggingface
+sentence-transformers

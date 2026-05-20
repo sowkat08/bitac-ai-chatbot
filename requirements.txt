@@ -5,3 +5,4 @@ langchain-pinecone
 langchain-community
 langchain-huggingface
 sentence-transformers
+unstructured

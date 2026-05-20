@@ -1,5 +1,6 @@
 pinecone
 langchain
+langchain-text-splitters
 langchain-pinecone
 langchain-community
 langchain-huggingface

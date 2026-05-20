@@ -1,43 +1,29 @@
 import os
-import gc  # Garbage collector for memory management
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenAIEmbeddings
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
-app = FastAPI(title="BITAC Optimized Chatbot")
+app = FastAPI(title="BITAC Smart Chatbot")
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 INDEX_NAME = "bitac-chatbot"
 
 if not PINECONE_API_KEY or not GOOGLE_API_KEY:
-    raise ValueError("ERROR: PINECONE_API_KEY or GOOGLE_API_KEY is missing!")
+    raise ValueError("ERROR: Keys are missing!")
 
-# ১. পাইনকোন কানেক্ট করা
 pc = Pinecone(api_key=PINECONE_API_KEY)
-
-# 🧠 মেমরি অপ্টিমাইজড মডেল লোডিং
-print("⏳ Loading Embeddings to Memory safely...")
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={'device': 'cpu'},  # ফোর্সেড সিপিইউ অপারেশন
-    encode_kwargs={'normalize_embeddings': True}
-)
-
-# লোড হওয়ার পর র‍্যাম খালি করা
-gc.collect()
+embeddings = GoogleGenAIEmbeddings(model="models/text-embedding-004", google_api_key=GOOGLE_API_KEY)
 
 vectorstore = PineconeVectorStore(index_name=INDEX_NAME, embedding=embeddings)
-retriever = vectorstore.as_retriever(search_kwargs={"k": 2}) # মেমরি বাঁচাতে টপ ২ টুকরো রিট্রিভ করবে
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# ২. জেমিনি ব্রেন সেটআপ
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY, temperature=0.3)
 
 system_prompt = (
@@ -58,7 +44,6 @@ rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 class ChatRequest(BaseModel):
     message: str
 
-# 🎨 ফ্রন্টএন্ড UI
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -74,8 +59,8 @@ HTML_TEMPLATE = """
         .chat-header { background: #1e3a8a; color: white; padding: 20px; }
         .chat-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; background: #fafafa; }
         .message { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
-        .message.user { background: #2563eb; color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
-        .message.bot { background: #e5e7eb; color: #1f2937; align-self: flex-start; border-bottom-left-radius: 2px; }
+        .message.user { background: #2563eb; color: white; align-self: flex-end; }
+        .message.bot { background: #e5e7eb; color: #1f2937; align-self: flex-start; }
         .chat-input-area { padding: 15px; background: white; border-top: 1px solid #e5e7eb; display: flex; gap: 10px; }
         .chat-input-area input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; outline: none; }
         .chat-input-area button { background: #2563eb; color: white; border: none; padding: 0 20px; border-radius: 8px; cursor: pointer; }
@@ -83,12 +68,8 @@ HTML_TEMPLATE = """
 </head>
 <body>
 <div class="chat-container">
-    <div class="chat-header">
-        <h3>BITAC Tech-Bot 🚀</h3>
-    </div>
-    <div class="chat-messages" id="chat-box">
-        <div class="message bot">হ্যালো! আমি বিটাক এআই চ্যাটবট। আপনাকে কীভাবে সাহায্য করতে পারি?</div>
-    </div>
+    <div class="chat-header"><h3>BITAC Tech-Bot 🚀</h3></div>
+    <div class="chat-messages" id="chat-box"><div class="message bot">হ্যালো! আমি বিটাক এআই চ্যাটবট। কীভাবে সাহায্য করতে পারি?</div></div>
     <div class="chat-input-area">
         <input type="text" id="user-input" placeholder="Type your message here...">
         <button onclick="sendMessage()">Send</button>
@@ -127,13 +108,11 @@ HTML_TEMPLATE = """
 """
 
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return HTML_TEMPLATE
+def home(): return HTML_TEMPLATE
 
 @app.post("/chat")
 def chat(request: ChatRequest):
     try:
         response = rag_chain.invoke({"input": request.message})
         return {"chatbot_response": response["answer"], "status": "Success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))

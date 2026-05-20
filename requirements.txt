@@ -1,5 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.2+cpu
 fastapi
 uvicorn
 pydantic
@@ -8,7 +6,5 @@ langchain>=0.3.0
 langchain-text-splitters
 langchain-pinecone>=0.2.0
 langchain-community>=0.3.0
-langchain-huggingface
-sentence-transformers
 unstructured
 langchain-google-genai

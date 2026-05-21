@@ -1,10 +1,14 @@
 fastapi
 uvicorn
+
 langchain==0.3.25
 langchain-core==0.3.59
 langchain-community==0.3.24
+
 langchain-pinecone==0.2.6
 langchain-cohere==0.4.4
-pinecone
-cohere
+
+pinecone==7.0.2
+cohere==5.15.0
+
 python-dotenv

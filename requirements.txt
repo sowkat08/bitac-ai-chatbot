@@ -9,7 +9,7 @@ langchain-pinecone==0.2.6
 langchain-cohere==0.4.4
 
 pinecone==6.0.2
-cohere==5.5.8
+cohere==5.15.0
 
 python-dotenv==1.1.0
 pydantic==2.11.4

@@ -13,7 +13,7 @@ from langchain.chains.combine_documents.stuff import create_stuff_documents_chai
 from langchain_core.prompts import ChatPromptTemplate
 
 # ================= APP =================
-app = FastAPI(title="BITAC AI Chatbot")
+app = FastAPI(title="BITAC AI Smart Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,7 +51,6 @@ retriever = vectorstore.as_retriever(
 )
 
 # ================= LLM =================
-
 llm = ChatCohere(
     model="command-r-plus-08-2024",
     cohere_api_key=COHERE_API_KEY,
@@ -62,14 +61,15 @@ llm = ChatCohere(
 system_prompt = """
 You are BITAC AI Assistant.
 
-Use ONLY the context below:
+Use only the context below.
 
+If answer not found, say "I don't know".
+
+Always reply clearly.
+If user writes Bangla, reply in Bangla.
+
+Context:
 {context}
-
-Rules:
-- If answer not found, say "I don't know"
-- Reply clearly
-- If Bangla, reply in Bangla
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -77,8 +77,8 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}")
 ])
 
-question_chain = create_stuff_documents_chain(llm, prompt)
-rag_chain = create_retrieval_chain(retriever, question_chain)
+doc_chain = create_stuff_documents_chain(llm, prompt)
+rag_chain = create_retrieval_chain(retriever, doc_chain)
 
 # ================= REQUEST =================
 class ChatRequest(BaseModel):
@@ -86,47 +86,46 @@ class ChatRequest(BaseModel):
 
 # ================= CHAT API =================
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(req: ChatRequest):
     try:
-        result = rag_chain.invoke({"input": request.message})
-
-        answer = result.get("answer") or result.get("output") or str(result)
+        result = rag_chain.invoke({"input": req.message})
+        answer = result.get("answer", "No answer found")
 
         return {
-            "question": request.message,
-            "answer": answer,
-            "status": "success"
+            "question": req.message,
+            "answer": answer
         }
 
     except Exception as e:
-        print("ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
-# ================= UI =================
-HTML_TEMPLATE = """
+# ================= UI (SMART CHAT) =================
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
 <!DOCTYPE html>
 <html>
 <head>
     <title>BITAC AI Chatbot</title>
     <style>
         body {
+            margin: 0;
             font-family: Arial;
-            background: #f3f4f6;
+            background: #0f172a;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
         }
 
-        .box {
+        .chatbox {
             width: 420px;
-            height: 600px;
+            height: 650px;
             background: white;
-            border-radius: 12px;
+            border-radius: 15px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
         }
 
         .header {
@@ -134,12 +133,14 @@ HTML_TEMPLATE = """
             color: white;
             padding: 15px;
             text-align: center;
+            font-weight: bold;
         }
 
-        .chat {
+        .messages {
             flex: 1;
             padding: 10px;
             overflow-y: auto;
+            background: #f1f5f9;
         }
 
         .msg {
@@ -147,6 +148,7 @@ HTML_TEMPLATE = """
             padding: 10px;
             border-radius: 10px;
             max-width: 80%;
+            white-space: pre-wrap;
         }
 
         .user {
@@ -157,55 +159,75 @@ HTML_TEMPLATE = """
 
         .bot {
             background: #e5e7eb;
+            margin-right: auto;
         }
 
-        .input {
+        .input-box {
             display: flex;
             border-top: 1px solid #ddd;
         }
 
         input {
             flex: 1;
-            padding: 10px;
+            padding: 12px;
             border: none;
             outline: none;
         }
 
         button {
-            padding: 10px 15px;
+            padding: 12px 15px;
+            border: none;
             background: #2563eb;
             color: white;
-            border: none;
             cursor: pointer;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        .typing {
+            font-size: 12px;
+            color: gray;
+            margin-left: 10px;
         }
     </style>
 </head>
 
 <body>
 
-<div class="box">
-    <div class="header">
-        BITAC AI Chatbot 🚀
-    </div>
+<div class="chatbox">
+    <div class="header">BITAC AI Smart Chatbot 🚀</div>
 
-    <div class="chat" id="chat"></div>
+    <div class="messages" id="messages"></div>
 
-    <div class="input">
-        <input id="msg" placeholder="Type your question..." />
+    <div class="input-box">
+        <input id="input" placeholder="Ask something..." />
         <button onclick="send()">Send</button>
     </div>
 </div>
 
 <script>
-async function send() {
-    let input = document.getElementById("msg");
-    let chat = document.getElementById("chat");
+const messages = document.getElementById("messages");
 
-    let text = input.value;
+function addMessage(text, type) {
+    let div = document.createElement("div");
+    div.className = "msg " + type;
+    div.innerText = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+}
+
+async function send() {
+    let input = document.getElementById("input");
+    let text = input.value.trim();
+
     if (!text) return;
 
-    chat.innerHTML += `<div class='msg user'>${text}</div>`;
+    addMessage(text, "user");
     input.value = "";
+
+    addMessage("Typing...", "bot");
 
     let res = await fetch("/chat", {
         method: "POST",
@@ -215,15 +237,13 @@ async function send() {
 
     let data = await res.json();
 
-    chat.innerHTML += `<div class='msg bot'>${data.answer}</div>`;
-    chat.scrollTop = chat.scrollHeight;
+    // remove typing
+    messages.removeChild(messages.lastChild);
+
+    addMessage(data.answer, "bot");
 }
 </script>
 
 </body>
 </html>
-"""
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTML_TEMPLATE
+    """

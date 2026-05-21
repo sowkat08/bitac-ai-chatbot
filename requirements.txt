@@ -4,7 +4,7 @@ uvicorn==0.34.2
 langchain==0.3.25
 langchain-core==0.3.59
 langchain-community==0.3.24
-
+langchain-text-splitters
 langchain-pinecone==0.2.6
 langchain-cohere==0.4.4
 
@@ -20,3 +20,4 @@ pandas
 openpyxl
 python-docx
 pypdf
+docx2txt

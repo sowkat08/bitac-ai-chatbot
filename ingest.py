@@ -2,7 +2,7 @@ import os
 from pinecone import Pinecone
 from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")

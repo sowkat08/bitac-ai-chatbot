@@ -1,12 +1,10 @@
 import os
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from pinecone import Pinecone
-
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
 
@@ -14,24 +12,17 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
-# =========================
-# APP
-# =========================
-
+# ================= APP =================
 app = FastAPI(title="BITAC AI Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================
-# ENV
-# =========================
-
+# ================= ENV =================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = "bitac-chatbot"
@@ -39,19 +30,18 @@ INDEX_NAME = "bitac-chatbot"
 if not PINECONE_API_KEY or not COHERE_API_KEY:
     raise ValueError("Missing API keys")
 
-# =========================
-# PINECONE + VECTORSTORE
-# =========================
-
+# ================= PINECONE =================
 pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(INDEX_NAME)
 
+# ================= EMBEDDINGS =================
 embeddings = CohereEmbeddings(
     model="embed-multilingual-v3.0",
     cohere_api_key=COHERE_API_KEY
 )
 
 vectorstore = PineconeVectorStore(
-    index_name=INDEX_NAME,
+    index=index,
     embedding=embeddings
 )
 
@@ -60,28 +50,25 @@ retriever = vectorstore.as_retriever(
     search_kwargs={"k": 5}
 )
 
-# =========================
-# LLM
-# =========================
-
+# ================= LLM =================
 llm = ChatCohere(
-    model="command-r-plus",
+    model="command",
     cohere_api_key=COHERE_API_KEY,
     temperature=0.3
 )
 
-# =========================
-# PROMPT (CHAT STYLE)
-# =========================
-
+# ================= PROMPT =================
 system_prompt = """
 You are BITAC AI Assistant.
 
+Use ONLY the context below:
+
+{context}
+
 Rules:
-- Answer ONLY using given context
-- If not found, say you don't know
-- Always reply clearly
-- If user writes Bangla, reply in Bangla
+- If answer not found, say "I don't know"
+- Reply clearly
+- If Bangla, reply in Bangla
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -89,92 +76,75 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}")
 ])
 
-# =========================
-# RAG CHAIN
-# =========================
+question_chain = create_stuff_documents_chain(llm, prompt)
+rag_chain = create_retrieval_chain(retriever, question_chain)
 
-doc_chain = create_stuff_documents_chain(llm, prompt)
-rag_chain = create_retrieval_chain(retriever, doc_chain)
-
-# =========================
-# REQUEST MODEL
-# =========================
-
+# ================= REQUEST =================
 class ChatRequest(BaseModel):
     message: str
 
-# =========================
-# CHAT API
-# =========================
-
+# ================= CHAT API =================
 @app.post("/chat")
 async def chat(request: ChatRequest):
-
     try:
-        result = rag_chain.invoke({
-            "input": request.message
-        })
+        result = rag_chain.invoke({"input": request.message})
 
-        answer = result.get("answer") or result.get("output") or "No answer found"
+        answer = result.get("answer") or result.get("output") or str(result)
 
         return {
-            "user_question": request.message,
-            "chatbot_answer": answer,
+            "question": request.message,
+            "answer": answer,
             "status": "success"
         }
 
     except Exception as e:
         print("ERROR:", e)
-        raise HTTPException(status_code=500, detail="Chat error")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# =========================
-# REAL CHAT UI
-# =========================
-
+# ================= UI =================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <title>BITAC AI Chatbot</title>
-
     <style>
         body {
             font-family: Arial;
-            background: #f4f4f4;
+            background: #f3f4f6;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
         }
 
-        .chat-box {
+        .box {
             width: 420px;
             height: 600px;
             background: white;
             border-radius: 12px;
             display: flex;
             flex-direction: column;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+            overflow: hidden;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
         }
 
         .header {
-            background: #2563eb;
+            background: #1e3a8a;
             color: white;
             padding: 15px;
             text-align: center;
-            font-weight: bold;
         }
 
-        .messages {
+        .chat {
             flex: 1;
             padding: 10px;
             overflow-y: auto;
         }
 
         .msg {
-            margin: 8px;
+            margin: 8px 0;
             padding: 10px;
-            border-radius: 8px;
+            border-radius: 10px;
             max-width: 80%;
         }
 
@@ -188,7 +158,7 @@ HTML_TEMPLATE = """
             background: #e5e7eb;
         }
 
-        .input-box {
+        .input {
             display: flex;
             border-top: 1px solid #ddd;
         }
@@ -201,10 +171,10 @@ HTML_TEMPLATE = """
         }
 
         button {
+            padding: 10px 15px;
             background: #2563eb;
             color: white;
             border: none;
-            padding: 10px 15px;
             cursor: pointer;
         }
     </style>
@@ -212,34 +182,28 @@ HTML_TEMPLATE = """
 
 <body>
 
-<div class="chat-box">
-
+<div class="box">
     <div class="header">
-        BITAC AI Chatbot 🤖
+        BITAC AI Chatbot 🚀
     </div>
 
-    <div class="messages" id="messages">
-        <div class="msg bot">Hello! Ask me anything 👋</div>
-    </div>
+    <div class="chat" id="chat"></div>
 
-    <div class="input-box">
-        <input id="input" placeholder="Type your question...">
+    <div class="input">
+        <input id="msg" placeholder="Type your question..." />
         <button onclick="send()">Send</button>
     </div>
-
 </div>
 
 <script>
+async function send() {
+    let input = document.getElementById("msg");
+    let chat = document.getElementById("chat");
 
-async function send(){
-
-    let input = document.getElementById("input");
     let text = input.value;
+    if (!text) return;
 
-    if(!text) return;
-
-    addMessage(text, "user");
-
+    chat.innerHTML += `<div class='msg user'>${text}</div>`;
     input.value = "";
 
     let res = await fetch("/chat", {
@@ -250,19 +214,9 @@ async function send(){
 
     let data = await res.json();
 
-    addMessage(data.chatbot_answer, "bot");
+    chat.innerHTML += `<div class='msg bot'>${data.answer}</div>`;
+    chat.scrollTop = chat.scrollHeight;
 }
-
-function addMessage(text, type){
-
-    let div = document.createElement("div");
-
-    div.className = "msg " + type;
-    div.innerText = text;
-
-    document.getElementById("messages").appendChild(div);
-}
-
 </script>
 
 </body>
@@ -270,5 +224,5 @@ function addMessage(text, type){
 """
 
 @app.get("/", response_class=HTMLResponse)
-async def home():
+def home():
     return HTML_TEMPLATE

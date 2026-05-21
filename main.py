@@ -5,8 +5,9 @@ from pydantic import BaseModel
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
-from langchain_community.chains import create_retrieval_chain
-from langchain_community.chains.combine_documents import create_stuff_documents_chain
+# 💡 ল্যাংচেইনের লেটেস্ট ভার্সন ৩ অনুযায়ী ইমপোর্ট পাথ সম্পূর্ণ কারেক্ট করা হলো
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI(title="BITAC Smart Cohere Chatbot")
@@ -24,6 +25,7 @@ embeddings = CohereEmbeddings(model="embed-multilingual-v3.0", cohere_api_key=CO
 vectorstore = PineconeVectorStore(index_name=INDEX_NAME, embedding=embeddings)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
+# কোহের-এর শক্তিশালী লাইটওয়েট মডেল
 llm = ChatCohere(model="command-r", cohere_api_key=COHERE_API_KEY, temperature=0.3)
 
 system_prompt = (

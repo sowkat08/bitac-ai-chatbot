@@ -5,8 +5,9 @@ from pydantic import BaseModel
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+# 💡 এখানে ল্যাংচেইনের নতুন মডিউল পাথ সম্পূর্ণ ঠিক করা আছে
+from langchain_community.chains import create_retrieval_chain
+from langchain_community.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI(title="BITAC Smart Chatbot")
@@ -19,7 +20,7 @@ if not PINECONE_API_KEY or not GOOGLE_API_KEY:
     raise ValueError("ERROR: Keys are missing!")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
-embeddings = GoogleGenAIEmbeddings(model="models/text-embedding-004", google_api_key=GOOGLE_API_KEY)
+embeddings = GoogleGenerativeAIEmbeddings(model="text-embedding-004", google_api_key=GOOGLE_API_KEY)
 
 vectorstore = PineconeVectorStore(index_name=INDEX_NAME, embedding=embeddings)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
@@ -27,10 +28,10 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY, temperature=0.3)
 
 system_prompt = (
-    "You are an advanced AI assistant for BITAC.\n"
+    "You are an advanced AI assistant for BITAC (Bangladesh Industrial Technical Assistance Center).\n"
     "Use the following pieces of retrieved context to answer the question in detail.\n"
     "If someone asks in Bengali, reply beautifully in Bengali using the context.\n"
-    "If you don't know the answer, say that politely.\n\n"
+    "If you don't know the answer or if it's not in the context, say that politely.\n\n"
     "Context:\n{context}"
 )
 prompt = ChatPromptTemplate.from_messages([
@@ -58,18 +59,18 @@ HTML_TEMPLATE = """
         .chat-container { width: 100%; max-width: 500px; height: 80vh; background: #ffffff; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); display: flex; flex-direction: column; overflow: hidden; }
         .chat-header { background: #1e3a8a; color: white; padding: 20px; }
         .chat-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; background: #fafafa; }
-        .message { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
-        .message.user { background: #2563eb; color: white; align-self: flex-end; }
-        .message.bot { background: #e5e7eb; color: #1f2937; align-self: flex-start; }
+        .message { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
+        .message.user { background: #2563eb; color: white; align-self: flex-end; border-bottom-right-radius: 2px; }
+        .message.bot { background: #e5e7eb; color: #1f2937; align-self: flex-start; border-bottom-left-radius: 2px; }
         .chat-input-area { padding: 15px; background: white; border-top: 1px solid #e5e7eb; display: flex; gap: 10px; }
-        .chat-input-area input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; outline: none; }
-        .chat-input-area button { background: #2563eb; color: white; border: none; padding: 0 20px; border-radius: 8px; cursor: pointer; }
+        .chat-input-area input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; outline: none; font-size: 14px; }
+        .chat-input-area button { background: #2563eb; color: white; border: none; padding: 0 20px; border-radius: 8px; font-weight: 500; cursor: pointer; }
     </style>
 </head>
 <body>
 <div class="chat-container">
     <div class="chat-header"><h3>BITAC Tech-Bot 🚀</h3></div>
-    <div class="chat-messages" id="chat-box"><div class="message bot">হ্যালো! আমি বিটাক এআই চ্যাটবট। কীভাবে সাহায্য করতে পারি?</div></div>
+    <div class="chat-messages" id="chat-box"><div class="message bot">হ্যালো! আমি বিটাক এআই চ্যাটবট। আপনাকে কীভাবে সাহায্য করতে পারি?</div></div>
     <div class="chat-input-area">
         <input type="text" id="user-input" placeholder="Type your message here...">
         <button onclick="sendMessage()">Send</button>

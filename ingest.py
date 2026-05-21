@@ -67,10 +67,11 @@ for root, _, files in os.walk("bitac_files"):
             print("File error:", e)
 
 # ================= WEB =================
-urls = ["https://bitac.dhaka.gov.bd/",
-        https://bitac.dhaka.gov.bd/,
-        https://bitac.gov.bd/pages/officers
-       ]
+urls = [
+    "https://bitac.dhaka.gov.bd/",
+    "https://bitac.dhaka.gov.bd/",
+    "https://bitac.gov.bd/pages/officers"
+]
 
 for url in urls:
     wid = "web_" + url

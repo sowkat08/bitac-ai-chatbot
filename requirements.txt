@@ -13,3 +13,12 @@ cohere==5.15.0
 
 python-dotenv==1.1.0
 pydantic==2.11.4
+
+pypdf
+python-docx
+docx2txt
+pandas
+openpyxl
+requests
+beautifulsoup4
+tqdm

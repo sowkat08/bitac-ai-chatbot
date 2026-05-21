@@ -5,9 +5,10 @@ from pydantic import BaseModel
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
-# 💡 ল্যাংচেইনের লেটেস্ট ভার্সন ৩ অনুযায়ী ইমপোর্ট পাথ সম্পূর্ণ কারেক্ট করা হলো
-from langchain.chains import create_retrieval_chain
+
+# 💡 ল্যাংচেইনের লেটেস্ট স্ট্যান্ডার্ড অনুযায়ী এরর-প্রুফ ইমপোর্ট
 from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.retrieval import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI(title="BITAC Smart Cohere Chatbot")
@@ -17,7 +18,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = "bitac-chatbot"
 
 if not PINECONE_API_KEY or not COHERE_API_KEY:
-    raise ValueError("ERROR: Keys are missing!")
+    raise ValueError("ERROR: Required API keys are missing!")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 embeddings = CohereEmbeddings(model="embed-multilingual-v3.0", cohere_api_key=COHERE_API_KEY)
@@ -25,7 +26,7 @@ embeddings = CohereEmbeddings(model="embed-multilingual-v3.0", cohere_api_key=CO
 vectorstore = PineconeVectorStore(index_name=INDEX_NAME, embedding=embeddings)
 retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-# কোহের-এর শক্তিশালী লাইটওয়েট মডেল
+# কোহের-এর শক্তিশালী ও লাইটওয়েট মডেল
 llm = ChatCohere(model="command-r", cohere_api_key=COHERE_API_KEY, temperature=0.3)
 
 system_prompt = (
@@ -109,12 +110,14 @@ HTML_TEMPLATE = """
 </html>
 """
 
-@app.get("/", response_class=HTMLResponse)
-def home(): return HTML_TEMPLATE
-
 @app.post("/chat")
 def chat(request: ChatRequest):
     try:
         response = rag_chain.invoke({"input": request.message})
         return {"chatbot_response": response["answer"], "status": "Success"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTML_TEMPLATE

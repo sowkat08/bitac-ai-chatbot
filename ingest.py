@@ -1,4 +1,6 @@
 import os
+import json
+import hashlib
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -21,44 +23,75 @@ INDEX_NAME = "bitac-chatbot"
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index = pc.Index(INDEX_NAME)
 
-# ================= CLEAN =================
-index.delete(delete_all=True)
+TRACK_FILE = "track.json"
 
-# ================= LOAD FILES =================
+# ================= TRACKING =================
+if os.path.exists(TRACK_FILE):
+    done = json.load(open(TRACK_FILE))
+else:
+    done = {}
+
+def save():
+    json.dump(done, open(TRACK_FILE, "w"))
+
+def uid(text, src):
+    return hashlib.md5((text + src).encode()).hexdigest()
+
+# ================= LOAD =================
 docs = []
 
-# TXT
 for root, _, files in os.walk("bitac_files"):
     for f in files:
         path = os.path.join(root, f)
 
-        if f.endswith(".txt"):
-            docs += TextLoader(path).load()
+        if path in done:
+            continue
 
-        elif f.endswith(".pdf"):
-            docs += PyPDFLoader(path).load()
+        try:
+            if f.endswith(".txt"):
+                docs += TextLoader(path).load()
 
-        elif f.endswith(".docx"):
-            docs += Docx2txtLoader(path).load()
+            elif f.endswith(".pdf"):
+                docs += PyPDFLoader(path).load()
 
-        elif f.endswith(".xlsx"):
-            df = pd.read_excel(path)
-            docs.append(Document(page_content=df.to_string()))
+            elif f.endswith(".docx"):
+                docs += Docx2txtLoader(path).load()
+
+            elif f.endswith(".xlsx"):
+                df = pd.read_excel(path)
+                docs.append(Document(page_content=df.astype(str).to_string()))
+
+            done[path] = True
+
+        except Exception as e:
+            print("File error:", e)
 
 # ================= WEB =================
-urls = [
-    "https://example.com"
-]
+urls = ["https://bitac.dhaka.gov.bd/",
+        https://bitac.dhaka.gov.bd/,
+        https://bitac.gov.bd/pages/officers
+       ]
 
 for url in urls:
+    wid = "web_" + url
+
+    if wid in done:
+        continue
+
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text()
+
+        text = soup.get_text(separator=" ", strip=True)
 
         docs.append(Document(page_content=text, metadata={"source": url}))
-    except:
-        pass
+
+        done[wid] = True
+
+    except Exception as e:
+        print("Web error:", e)
+
+save()
 
 # ================= SPLIT =================
 splitter = RecursiveCharacterTextSplitter(
@@ -77,12 +110,22 @@ embeddings = CohereEmbeddings(
 texts = [c.page_content for c in chunks]
 vectors = embeddings.embed_documents(texts)
 
-# ================= UPLOAD =================
-upserts = [
-    (str(i), vectors[i], {"text": texts[i]})
-    for i in range(len(texts))
-]
+# ================= UPLOAD (NO DELETE = SAFE) =================
+upserts = []
+
+for i in range(len(texts)):
+    vid = uid(texts[i], chunks[i].metadata.get("source", "file"))
+
+    upserts.append((
+        vid,
+        vectors[i],
+        {
+            "text": texts[i],
+            "source": chunks[i].metadata.get("source", "file")
+        }
+    ))
 
 index.upsert(vectors=upserts)
 
-print("✅ INGEST DONE")
+print("✅ INGEST DONE SAFE (NO DATA LOSS)")
+print("📊 Vectors:", len(upserts))

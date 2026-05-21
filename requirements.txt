@@ -1,10 +1,11 @@
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters
+langchain-pinecone>=0.2.0
+langchain-cohere
 fastapi
 uvicorn
 pydantic
 pinecone>=5.0.0
-langchain-core>=0.3.0
-langchain-text-splitters
-langchain-pinecone>=0.2.0
-langchain-community>=0.3.0
-langchain-cohere
 unstructured

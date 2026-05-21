@@ -82,9 +82,6 @@ Rules:
 - If not found, say you don't know
 - Always reply clearly
 - If user writes Bangla, reply in Bangla
-
-Context:
-{context}
 """
 
 prompt = ChatPromptTemplate.from_messages([

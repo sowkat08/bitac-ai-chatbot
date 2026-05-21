@@ -6,9 +6,9 @@ from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
 
-# 💡 ল্যাংচেইনের লেটেস্ট স্ট্যান্ডার্ড অনুযায়ী এরর-প্রুফ ইমপোর্ট
+# 💡 মূল langchain প্যাকেজ থেকে লেটেস্ট স্ট্যান্ডার্ড ইমপোর্ট পাথ
+from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.retrieval import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI(title="BITAC Smart Cohere Chatbot")

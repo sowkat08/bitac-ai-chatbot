@@ -51,8 +51,9 @@ retriever = vectorstore.as_retriever(
 )
 
 # ================= LLM =================
+
 llm = ChatCohere(
-    model="command",
+    model="command-r-plus-08-2024",
     cohere_api_key=COHERE_API_KEY,
     temperature=0.3
 )

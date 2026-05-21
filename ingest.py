@@ -2,7 +2,6 @@ import os
 from pinecone import Pinecone
 from langchain_community.document_loaders import DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-# ওপরের ইমপোর্ট নাম
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
@@ -30,8 +29,8 @@ splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
 chunks = splitter.split_documents(docs)
 
 print("🧠 Generating Google Embeddings...")
-# 💡 এখানে নাম পরিবর্তন করে GoogleGenerativeAIEmbeddings করা হলো
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=GOOGLE_API_KEY)
+# 💡 এখানে মডেলের নাম একদম সঠিক "text-embedding-004" করে দেওয়া হয়েছে
+embeddings = GoogleGenerativeAIEmbeddings(model="text-embedding-004", google_api_key=GOOGLE_API_KEY)
 
 print(f"🚀 Pushing {len(chunks)} chunks to Pinecone...")
 vectorstore = PineconeVectorStore.from_documents(

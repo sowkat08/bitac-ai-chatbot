@@ -56,11 +56,12 @@ retriever = vectorstore.as_retriever(
 )
 
 # ================= LLM =================
-# [উন্নতি ২]: 'command-r' মডেল ব্যবহার করা হয়েছে (যা অত্যন্ত দ্রুত) এবং temperature=0.0 করা হয়েছে
+
+# [মডেল আপডেট]: 'command-r' এর পরিবর্তে একটিভ লেটেস্ট মডেল বসানো হলো
 llm = ChatCohere(
-    model="command-r", 
+    model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.0  # মডেলের নিজের থেকে বানিয়ে কথা বলার প্রবণতা পুরোপুরি বন্ধ করবে
+    temperature=0.0  # মডেলের বানিয়ে কথা বলা বন্ধ রাখবে
 )
 
 # ================= PROMPT =================

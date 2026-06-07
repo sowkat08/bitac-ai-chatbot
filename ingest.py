@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 
 from pinecone import Pinecone
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter 
 from langchain_cohere import CohereEmbeddings
 
 # ================= CONFIG =================

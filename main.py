@@ -94,9 +94,22 @@ class ChatRequest(BaseModel):
 # ================= CHAT API =================
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    # ১. ইনপুট খালি কি না চেক করা
+    if not req.message or not req.message.strip():
+        return {"question": req.message, "answer": "অনুগ্রহ করে কিছু লিখুন।"}
+
     try:
+        print(f"💬 Incoming Question: {req.message}")
+        
+        # ২. ল্যাংচেইন চেইন রান করা
         result = rag_chain.invoke({"input": req.message})
-        answer = result.get("answer", "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।")
+        
+        # ৩. উত্তর এক্সট্রাক্ট করা
+        answer = result.get("answer", "").strip()
+
+        # উত্তর যদি খালি আসে বা মডেল না চেনে
+        if not answer or "I don't know" in answer:
+            answer = "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
 
         return {
             "question": req.message,
@@ -104,13 +117,16 @@ async def chat(req: ChatRequest):
         }
 
     except Exception as e:
-        # score_threshold এর কারণে প্রাসঙ্গিক ডকুমেন্ট না পেলে যেন ক্র্যাশ না করে সেফ হ্যান্ডলিং
-        if "No relevant documents" in str(e) or "threshold" in str(e):
-            return {
-                "question": req.message,
-                "answer": "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
-            }
-        raise HTTPException(status_code=500, detail=str(e))
+        # [🚨 মোস্ট ক্রিশিয়াল]: এটি Render লগে আসল এররটি প্রিন্ট করে দেবে
+        import traceback
+        print("❌ CRITICAL CHAT ERROR DETECTED:")
+        print(traceback.format_exc()) 
+        
+        # সার্ভার যেন ৫০০ এরর না দিয়ে ফ্রন্টএন্ডে সেফ মেসেজ পাঠায়
+        return {
+            "question": req.message,
+            "answer": "দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে Render-এর Logs ট্যাব চেক করুন।"
+        }
 
 # ================= UI (SMART CHAT) =================
 @app.get("/", response_class=HTMLResponse)

@@ -25,7 +25,7 @@ app.add_middleware(
 # ================= ENV =================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
-INDEX_NAME = "bitac-chatbot"
+INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
 
 if not PINECONE_API_KEY or not COHERE_API_KEY:
     raise ValueError("Missing API keys")
@@ -45,28 +45,35 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
+# [উন্নতি ১]: k কমিয়ে ৩ করা হয়েছে এবং score_threshold যোগ করা হয়েছে
+# এর ফলে ডাটাবেজের তথ্যের সাথে মিল না থাকলে জোর করে ভুল ডেটা তুলে আনবে না
 retriever = vectorstore.as_retriever(
-    search_type="similarity",
-    search_kwargs={"k": 5}
+    search_type="similarity_score_threshold",
+    search_kwargs={
+        "k": 3,
+        "score_threshold": 0.55  # ৫৫% মিল না থাকলে তথ্য রিট্রিভ করবে না
+    }
 )
 
 # ================= LLM =================
+# [উন্নতি ২]: 'command-r' মডেল ব্যবহার করা হয়েছে (যা অত্যন্ত দ্রুত) এবং temperature=0.0 করা হয়েছে
 llm = ChatCohere(
-    model="command-r-plus-08-2024",
+    model="command-r", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.3
+    temperature=0.0  # মডেলের নিজের থেকে বানিয়ে কথা বলার প্রবণতা পুরোপুরি বন্ধ করবে
 )
 
 # ================= PROMPT =================
+# [উন্নতি ৩]: প্রম্পটকে আরও কঠোর ও প্রফেশনাল করা হয়েছে যেন মডেল বাউন্ডারি ক্রস না করে
 system_prompt = """
-You are BITAC AI Assistant.
+You are the official BITAC AI Assistant.
 
-Use only the context below.
-
-If answer not found, say "I don't know".
-
-Always reply clearly.
-If user writes Bangla, reply in Bangla.
+CRITICAL INSTRUCTIONS:
+1. Rely ONLY on the provided context below to answer the user's question.
+2. If the context does not contain the exact answer, strictly reply with: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
+3. Do not assume, extrapolate, or invent any facts under any circumstances. If the information is missing, say you don't know.
+4. If the user greets you (e.g., Hi, Hello, কেমন আছেন), reply politely.
+5. If the user writes in Bangla, reply clearly in Bangla. If English, reply in English.
 
 Context:
 {context}
@@ -89,7 +96,7 @@ class ChatRequest(BaseModel):
 async def chat(req: ChatRequest):
     try:
         result = rag_chain.invoke({"input": req.message})
-        answer = result.get("answer", "No answer found")
+        answer = result.get("answer", "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।")
 
         return {
             "question": req.message,
@@ -97,6 +104,12 @@ async def chat(req: ChatRequest):
         }
 
     except Exception as e:
+        # score_threshold এর কারণে প্রাসঙ্গিক ডকুমেন্ট না পেলে যেন ক্র্যাশ না করে সেফ হ্যান্ডলিং
+        if "No relevant documents" in str(e) or "threshold" in str(e):
+            return {
+                "question": req.message,
+                "answer": "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
+            }
         raise HTTPException(status_code=500, detail=str(e))
 
 # ================= UI (SMART CHAT) =================
@@ -110,7 +123,7 @@ def home():
     <style>
         body {
             margin: 0;
-            font-family: Arial;
+            font-family: Arial, sans-serif;
             background: #0f172a;
             display: flex;
             justify-content: center;
@@ -126,6 +139,7 @@ def home():
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
         }
 
         .header {
@@ -149,6 +163,8 @@ def home():
             border-radius: 10px;
             max-width: 80%;
             white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.4;
         }
 
         .user {
@@ -159,6 +175,7 @@ def home():
 
         .bot {
             background: #e5e7eb;
+            color: #1e293b;
             margin-right: auto;
         }
 
@@ -180,29 +197,21 @@ def home():
             background: #2563eb;
             color: white;
             cursor: pointer;
+            font-weight: bold;
         }
 
         button:hover {
             background: #1d4ed8;
         }
-
-        .typing {
-            font-size: 12px;
-            color: gray;
-            margin-left: 10px;
-        }
     </style>
 </head>
-
 <body>
 
 <div class="chatbox">
     <div class="header">BITAC AI Smart Chatbot 🚀</div>
-
     <div class="messages" id="messages"></div>
-
     <div class="input-box">
-        <input id="input" placeholder="Ask something..." />
+        <input id="input" placeholder="Ask something..." onkeypress="handleKeyPress(event)" />
         <button onclick="send()">Send</button>
     </div>
 </div>
@@ -218,6 +227,12 @@ function addMessage(text, type) {
     messages.scrollTop = messages.scrollHeight;
 }
 
+function handleKeyPress(e) {
+    if (e.key === 'Enter') {
+        send();
+    }
+}
+
 async function send() {
     let input = document.getElementById("input");
     let text = input.value.trim();
@@ -227,23 +242,35 @@ async function send() {
     addMessage(text, "user");
     input.value = "";
 
-    addMessage("Typing...", "bot");
+    // লোডিং এলিমেন্ট তৈরি (Typing... টেক্সটকে সুন্দর করা হয়েছে)
+    let typingDiv = document.createElement("div");
+    typingDiv.className = "msg bot";
+    typingDiv.innerHTML = "<i>বট ভাবছে...</i>";
+    messages.appendChild(typingDiv);
+    messages.scrollTop = messages.scrollHeight;
 
-    let res = await fetch("/chat", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({message: text})
-    });
+    try {
+        let res = await fetch("/chat", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({message: text})
+        });
 
-    let data = await res.json();
+        let data = await res.json();
+        messages.removeChild(typingDiv); // লোডিং রিমুভ
 
-    // remove typing
-    messages.removeChild(messages.lastChild);
-
-    addMessage(data.answer, "bot");
+        if (data.answer) {
+            addMessage(data.answer, "bot");
+        } else {
+            addMessage("দুঃখিত, কোনো উত্তর পাওয়া যায়নি।", "bot");
+        }
+    } catch (error) {
+        messages.removeChild(typingDiv);
+        addMessage("সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।", "bot");
+    }
 }
 </script>
 
 </body>
 </html>
-    """
+"""

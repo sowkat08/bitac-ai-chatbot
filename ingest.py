@@ -1,5 +1,6 @@
 import os
 import hashlib
+import time
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -51,7 +52,7 @@ if os.path.exists("bitac_files"):
                     docs += TextLoader(path, encoding='utf-8').load()
                     
                 elif f.endswith(".pdf"):
-                    # [🔥 টেবিল আপডেট]: পিডিএফ টেবিল নিখুঁতভাবে রিড করার জন্য pdfplumber ব্যবহার
+                    # পিডিএফ টেবিল নিখুঁতভাবে রিড করার জন্য pdfplumber ব্যবহার
                     import pdfplumber
                     try:
                         with pdfplumber.open(path) as pdf:
@@ -80,7 +81,7 @@ if os.path.exists("bitac_files"):
                         print(f"❌ PDF table parsing error ({path}):", e)
                         
                 elif f.endswith(".docx"):
-                    # [🔥 টেবিল আপডেট]: ওয়ার্ড ফাইলের সাধারণ প্যারাগ্রাফ ও টেবিল আলাদা করে রিড করা
+                    # ওয়ার্ড ফাইলের সাধারণ প্যারাগ্রাফ ও টেবিল আলাদা করে রিড করা
                     import docx as py_docx
                     try:
                         doc_obj = py_docx.Document(path)
@@ -167,11 +168,22 @@ else:
 
     texts = [c.page_content for c in chunks]
     
-    batch_size = 50
+    # 🚨 [রেট লিমিট সমাধান]: ব্যাচ সাইজ ২০ করা হলো এবং প্রতি ব্যাচে ৪ সেকেন্ডের বিরতি দেওয়া হলো
+    batch_size = 20  
     vectors = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+    
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i:i+batch_size]
+        current_batch = (i // batch_size) + 1
+        print(f"⏳ Processing batch {current_batch} of {total_batches}...")
+        
+        # এমবেডিং তৈরি করা
         vectors += embeddings.embed_documents(batch_texts)
+        
+        # ৪ সেকেন্ড বিরতি (Cohere যেন ১ মিনিটের ট্রায়াল লিমিট রিসেট করতে পারে)
+        if current_batch < total_batches:
+            time.sleep(4)
 
     upserts = []
     for i in range(len(texts)):

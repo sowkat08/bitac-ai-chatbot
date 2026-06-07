@@ -168,8 +168,8 @@ else:
 
     texts = [c.page_content for c in chunks]
     
-    # 🚨 [রেট লিমিট সমাধান]: ব্যাচ সাইজ ২০ করা হলো এবং প্রতি ব্যাচে ৪ সেকেন্ডের বিরতি দেওয়া হলো
-    batch_size = 20  
+    # 🚨 [Cohere রেট লিমিট সমাধান]: ব্যাচ সাইজ ৪০ করা হলো এবং প্রতি ব্যাচে ২ সেকেন্ড বিরতি দেওয়া হলো
+    batch_size = 40  
     vectors = []
     total_batches = (len(texts) + batch_size - 1) // batch_size
     
@@ -178,12 +178,10 @@ else:
         current_batch = (i // batch_size) + 1
         print(f"⏳ Processing batch {current_batch} of {total_batches}...")
         
-        # এমবেডিং তৈরি করা
         vectors += embeddings.embed_documents(batch_texts)
         
-        # ৪ সেকেন্ড বিরতি (Cohere যেন ১ মিনিটের ট্রায়াল লিমিট রিসেট করতে পারে)
         if current_batch < total_batches:
-            time.sleep(4)
+            time.sleep(2)
 
     upserts = []
     for i in range(len(texts)):
@@ -199,6 +197,12 @@ else:
             }
         ))
 
-    print(f"🚀 Uploading to Pinecone...")
-    index.upsert(vectors=upserts)
+    # 🚨 [Pinecone সাইজ লিমিট সমাধান]: ১০০টি করে ভেক্টর আলাদা ছোট ব্যাচে আপলোড হবে যেন 4MB ক্রস না হয়
+    print(f"🚀 Uploading to Pinecone in batches...")
+    pinecone_batch_size = 100
+    for j in range(0, len(upserts), pinecone_batch_size):
+        pinecone_batch = upserts[j:j+pinecone_batch_size]
+        print(f"📤 Uploading vectors {j} to {min(j + pinecone_batch_size, len(upserts))}...")
+        index.upsert(vectors=pinecone_batch)
+
     print(f"✅ সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! মোট ভেক্টর: {len(upserts)}")

@@ -9,6 +9,8 @@ from pinecone import Pinecone
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_cohere import CohereEmbeddings
+# Cohere এরর হ্যান্ডেল করার জন্য নতুন ইম্পোর্ট
+from cohere.errors.too_many_requests_error import TooManyRequestsError
 
 # ================= CONFIG =================
 INDEX_NAME = "bitac-chatbot"
@@ -52,7 +54,6 @@ if os.path.exists("bitac_files"):
                     docs += TextLoader(path, encoding='utf-8').load()
                     
                 elif f.endswith(".pdf"):
-                    # পিডিএফ টেবিল নিখুঁতভাবে রিড করার জন্য pdfplumber ব্যবহার
                     import pdfplumber
                     try:
                         with pdfplumber.open(path) as pdf:
@@ -61,7 +62,6 @@ if os.path.exists("bitac_files"):
                                 text = page.extract_text() or ""
                                 tables = page.extract_tables()
                                 
-                                # টেবিল পাওয়া গেলে সেটিকে স্ট্রাকচার্ড পাইপ (|) টেক্সটে রূপান্তর
                                 if tables:
                                     text += "\n\n--- [Table Data] ---"
                                     for table in tables:
@@ -81,18 +81,15 @@ if os.path.exists("bitac_files"):
                         print(f"❌ PDF table parsing error ({path}):", e)
                         
                 elif f.endswith(".docx"):
-                    # ওয়ার্ড ফাইলের সাধারণ প্যারাগ্রাফ ও টেবিল আলাদা করে রিড করা
                     import docx as py_docx
                     try:
                         doc_obj = py_docx.Document(path)
                         full_text = []
                         
-                        # প্যারাগ্রাফ রিড করা
                         for para in doc_obj.paragraphs:
                             if para.text.strip():
                                 full_text.append(para.text)
                                 
-                        # টেবিলের ডেটা কলাম-রো অনুযায়ী রিড করা
                         for table in doc_obj.tables:
                             full_text.append("\n--- [Table Data] ---")
                             for row in table.rows:
@@ -153,56 +150,72 @@ for url in urls:
     except Exception as e:
         print(f"⏭️ URL Skipped due to network/timeout: {url}")
 
-# ================= SPLIT & UPLOAD =================
+# ================= SPLIT, EMBED & UPLOAD (UPDATED) =================
 if not docs:
     print("✅ কোনো নতুন ডেটা নেই। ডাটাবেজ অলরেডি আপ-টু-ডেট!")
 else:
+    # টেবিল ডাটা যেন সুন্দরভাবে ইনজেস্ট হয় তাই chunk_size ও overlap আগের মতোই রাখা হলো
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
     chunks = splitter.split_documents(docs)
 
-    print(f"🧠 Generating Embeddings for {len(chunks)} chunks...")
+    print(f"🧠 Generating Embeddings & Uploading {len(chunks)} chunks...")
     embeddings = CohereEmbeddings(
         model="embed-multilingual-v3.0",
         cohere_api_key=os.getenv("COHERE_API_KEY")
     )
 
-    texts = [c.page_content for c in chunks]
-    
-    # 🚨 [Cohere রেট লিমিট সমাধান]: ব্যাচ সাইজ ৪০ করা হলো এবং প্রতি ব্যাচে ২ সেকেন্ড বিরতি দেওয়া হলো
-    batch_size = 40  
-    vectors = []
-    total_batches = (len(texts) + batch_size - 1) // batch_size
-    
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
+    # টেবিল ডাটার অতিরিক্ত টোকেন লিমিট এবং পাইনকোনের সাইজ লিমিট একসাথে হ্যান্ডেল করতে 
+    # ব্যাচ সাইজ ৩০ করা হলো (সেফটি জোন)
+    batch_size = 30  
+    total_batches = (len(chunks) + batch_size - 1) // batch_size
+    total_uploaded = 0
+
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i:i+batch_size]
+        batch_texts = [c.page_content for c in batch_chunks]
         current_batch = (i // batch_size) + 1
+        
         print(f"⏳ Processing batch {current_batch} of {total_batches}...")
         
-        vectors += embeddings.embed_documents(batch_texts)
-        
-        if current_batch < total_batches:
-            time.sleep(2)
+        # ট্রাই-এক্সেপ্ট লুপ যা এরর আসলেও কোড ক্র্যাশ করতে দেবে না
+        while True:
+            try:
+                # ১. Cohere থেকে এম্বেডিং তৈরি করা
+                batch_vectors = embeddings.embed_documents(batch_texts)
+                
+                # ২. Pinecone-এর জন্য Upsert ফরম্যাট রেডি করা
+                pinecone_upserts = []
+                for j in range(len(batch_texts)):
+                    src_metadata = batch_chunks[j].metadata.get("source", "file")
+                    vid = uid(batch_texts[j], src_metadata)
+                    
+                    pinecone_upserts.append((
+                        vid,
+                        batch_vectors[j],
+                        {
+                            "text": batch_texts[j],
+                            "source": src_metadata
+                        }
+                    ))
+                
+                # ৩. সাথে সাথে Pinecone-এ আপলোড করে দেওয়া
+                index.upsert(vectors=pinecone_upserts)
+                total_uploaded += len(pinecone_upserts)
+                print(f"✅ Batch {current_batch} সফলভাবে Pinecone-এ আপলোড হয়েছে।")
+                
+                # ছোট বিরতি (ফ্রি অ্যাকাউন্টের সেফটির জন্য)
+                time.sleep(3)
+                break # সফল হলে ভেতরের লুপ ভেঙে পরের ব্যাচে যাবে
+                
+            except TooManyRequestsError:
+                # টেবিল ডাটার টোকেন লিমিট শেষ হলেই কোড এখানে এসে ৬০ সেকেন্ড থামবে
+                print("\n⚠️ টেবিল ডাটার জন্য Cohere ফ্রি টোকেন লিমিট (১ লাখ) পার হয়ে গেছে!")
+                print("⏳ রেট লিমিট রিসেট হওয়ার জন্য ৬০ সেকেন্ড অপেক্ষা করছি...")
+                time.sleep(60)
+                print("🔄 নতুন মিনিট শুরু হয়েছে, আবার চেষ্টা করা হচ্ছে...\n")
+                
+            except Exception as e:
+                print(f"❌ অপ্রত্যাশিত এরর: {e}")
+                raise e
 
-    upserts = []
-    for i in range(len(texts)):
-        src_metadata = chunks[i].metadata.get("source", "file")
-        vid = uid(texts[i], src_metadata)
-
-        upserts.append((
-            vid,
-            vectors[i],
-            {
-                "text": texts[i],
-                "source": src_metadata
-            }
-        ))
-
-    # 🚨 [Pinecone সাইজ লিমিট সমাধান]: ১০০টি করে ভেক্টর আলাদা ছোট ব্যাচে আপলোড হবে যেন 4MB ক্রস না হয়
-    print(f"🚀 Uploading to Pinecone in batches...")
-    pinecone_batch_size = 100
-    for j in range(0, len(upserts), pinecone_batch_size):
-        pinecone_batch = upserts[j:j+pinecone_batch_size]
-        print(f"📤 Uploading vectors {j} to {min(j + pinecone_batch_size, len(upserts))}...")
-        index.upsert(vectors=pinecone_batch)
-
-    print(f"✅ সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! মোট ভেক্টর: {len(upserts)}")
+    print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! নতুন যুক্ত হওয়া মোট ভেক্টর: {total_uploaded}")

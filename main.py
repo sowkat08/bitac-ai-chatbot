@@ -9,8 +9,10 @@ from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
 
 from langchain.chains import create_retrieval_chain
+from langchain.chains import create_history_aware_retriever
 from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 
 # ================= APP =================
 app = FastAPI(title="BITAC AI Smart Chatbot")
@@ -45,14 +47,13 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# [🔥 নতুন আপডেট]: 'similarity_score_threshold' এর পরিবর্তে 'mmr' সার্চ টাইপ ব্যবহার করা হলো
-# এটি ইউজার নিজের ভাষায় ঘুরিয়ে প্রশ্ন করলেও তথ্যের মূল অর্থ বা ইনটেন্ট (Intent) ম্যাচ করতে পারে
+# [🔥 MMR রিট্রিভার]: তথ্যের মূল অর্থ বা ইনটেন্ট ম্যাচ করার জন্য
 retriever = vectorstore.as_retriever(
     search_type="mmr",
     search_kwargs={
-        "k": 4,              # মডেলের কাছে একসাথে ৪টি সেরা প্রাসঙ্গিক টুকরো পাঠাবে
-        "fetch_k": 10,       # ডাটাবেজ থেকে প্রথমে ১০টি সম্ভাব্য খণ্ড টানবে, তারপর ফিল্টার করবে
-        "lambda_mult": 0.6   # তথ্যের বৈচিত্র্য এবং মিলের মধ্যে একটি পারফেক্ট ব্যালেন্স রাখবে
+        "k": 4,              
+        "fetch_k": 10,       
+        "lambda_mult": 0.6   
     }
 )
 
@@ -60,11 +61,26 @@ retriever = vectorstore.as_retriever(
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.0  # মডেলের নিজের থেকে তথ্য বানিয়ে বানিয়ে বাড়িয়ে কথা বলা বন্ধ রাখবে
+    temperature=0.0  
 )
 
-# ================= PROMPT =================
-# [🔥 নতুন আপডেট]: প্রম্পটকে কিছুটা বুদ্ধিমান করা হয়েছে যাতে হুবহু বাক্য না মিললেও কনটেক্সটের অর্থ বুঝে বট উত্তর দিতে পারে
+# ================= CONTEXTUALIZE QUESTION PROMPT (MEMORY RETRIEVER) =================
+# এই অংশটি চ্যাট হিস্ট্রি দেখে ইউজারের আধো-আধো বা ছোট প্রশ্নকে পূর্ণাঙ্গ প্রশ্নে রূপান্তর করবে
+contextualize_q_system_prompt = """
+Given a chat history and the latest user question which might reference context in the chat history, 
+formulate a standalone question which can be understood without the chat history. 
+Do NOT answer the question, just reformulate it if needed and otherwise return it as is.
+"""
+contextualize_q_prompt = ChatPromptTemplate.from_messages([
+    ("system", contextualize_q_system_prompt),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+])
+
+# হিস্ট্রি ট্র্যাক করার স্মার্ট রিট্রিভার তৈরি
+history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
+
+# ================= MAIN PROMPT =================
 system_prompt = """
 You are the official BITAC AI Assistant.
 
@@ -81,33 +97,44 @@ Context:
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
+    MessagesPlaceholder(variable_name="chat_history"), # মূল প্রম্পটেও মেমোরি ইনজেক্ট করা হলো
     ("human", "{input}")
 ])
 
 doc_chain = create_stuff_documents_chain(llm, prompt)
-rag_chain = create_retrieval_chain(retriever, doc_chain)
+# এখানে মূল রিট্রিভারের বদলে মেমোরি-অ্যাওয়ার রিট্রিভারটি দেওয়া হলো
+rag_chain = create_retrieval_chain(history_aware_retriever, doc_chain)
 
-# ================= REQUEST =================
+# ================= REQUEST MODEL =================
 class ChatRequest(BaseModel):
     message: str
+    history: list = [] # ফ্রন্টঅ্যান্ডের চ্যাট হিস্ট্রি রিসিভ করার অ্যারে
 
 # ================= CHAT API =================
 @app.post("/chat")
 async def chat(req: ChatRequest):
-    # ১. ইনপুট খালি কি না চেক করা
     if not req.message or not req.message.strip():
         return {"question": req.message, "answer": "অনুগ্রহ করে কিছু লিখুন।"}
 
     try:
         print(f"💬 Incoming Question: {req.message}")
         
-        # ২. ল্যাংচেইন চেইন রান করা
-        result = rag_chain.invoke({"input": req.message})
+        # ফ্রন্টঅ্যান্ড থেকে আসা মেমোরি লিস্টকে ল্যাংচেইনের মেসেজ ফরম্যাটে (Human/AI) রূপান্তর
+        chat_history = []
+        for msg in req.history:
+            if msg.get("type") == "user":
+                chat_history.append(HumanMessage(content=msg.get("text")))
+            elif msg.get("type") == "bot":
+                chat_history.append(AIMessage(content=msg.get("text")))
         
-        # ৩. উত্তর এক্সট্রাক্ট করা
+        # চেইনে ইনপুট এবং চ্যাট হিস্ট্রি একসাথে পাস করা
+        result = rag_chain.invoke({
+            "input": req.message,
+            "chat_history": chat_history
+        })
+        
         answer = result.get("answer", "").strip()
 
-        # উত্তর যদি খালি আসে বা মডেল না চেনে
         if not answer or "I don't know" in answer:
             answer = "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
 
@@ -126,7 +153,7 @@ async def chat(req: ChatRequest):
             "answer": "দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে Render-এর Logs ট্যাব চেক করুন।"
         }
 
-# ================= UI (SMART CHAT) =================
+# ================= UI (SMART CHAT WITH MEMORY) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -232,6 +259,7 @@ def home():
 
 <script>
 const messages = document.getElementById("messages");
+let chatHistory = []; // [🔥 মেমোরি আপডেট]: ব্রাউজারে হিস্ট্রি সেভ রাখার গ্লোবাল ভেরিয়েবল
 
 function addMessage(text, type) {
     let div = document.createElement("div");
@@ -263,10 +291,14 @@ async function send() {
     messages.scrollTop = messages.scrollHeight;
 
     try {
+        // [🔥 মেমোরি আপডেট]: রিকোয়েস্ট বডিতে এখন চ্যাট হিস্ট্রিও পাঠানো হচ্ছে
         let res = await fetch("/chat", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({message: text})
+            body: JSON.stringify({
+                message: text,
+                history: chatHistory 
+            })
         });
 
         let data = await res.json();
@@ -274,6 +306,16 @@ async function send() {
 
         if (data.answer) {
             addMessage(data.answer, "bot");
+            
+            // সফলভাবে উত্তর আসার পর কারেন্ট মেসেজ জোড়া মেমোরিতে পুশ করা হচ্ছে
+            chatHistory.push({type: "user", text: text});
+            chatHistory.push({type: "bot", text: data.answer});
+            
+            // মেমোরি খুব বেশি বড় হয়ে যেন ব্রাউজার স্লো না করে (সর্বোচ্চ শেষ ৫ জোড়া কথা মনে রাখবে)
+            if (chatHistory.length > 10) {
+                chatHistory.shift();
+                chatHistory.shift();
+            }
         } else {
             addMessage("দুঃখিত, কোনো উত্তর পাওয়া যায়নি।", "bot");
         }

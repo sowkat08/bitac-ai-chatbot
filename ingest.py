@@ -49,25 +49,70 @@ if os.path.exists("bitac_files"):
                 if f.endswith(".txt"):
                     from langchain_community.document_loaders import TextLoader
                     docs += TextLoader(path, encoding='utf-8').load()
+                    
                 elif f.endswith(".pdf"):
-                    from langchain_community.document_loaders import PyPDFLoader
-                    loader = PyPDFLoader(path)
-                    # মেমোরি ক্র্যাশ এড়াতে সর্বোচ্চ ৫০ পেজ পর্যন্ত রিড করার সেফটি লিমিট
-                    page_count = 0
-                    for page in loader.lazy_load():
-                        docs.append(page)
-                        page_count += 1
-                        if page_count > 50: 
-                            print(f"⚠️ {path} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
-                            break
+                    # [🔥 টেবিল আপডেট]: পিডিএফ টেবিল নিখুঁতভাবে রিড করার জন্য pdfplumber ব্যবহার
+                    import pdfplumber
+                    try:
+                        with pdfplumber.open(path) as pdf:
+                            page_count = 0
+                            for page in pdf.pages:
+                                text = page.extract_text() or ""
+                                tables = page.extract_tables()
+                                
+                                # টেবিল পাওয়া গেলে সেটিকে স্ট্রাকচার্ড পাইপ (|) টেক্সটে রূপান্তর
+                                if tables:
+                                    text += "\n\n--- [Table Data] ---"
+                                    for table in tables:
+                                        for row in table:
+                                            clean_row = [str(cell).strip() for cell in row if cell is not None]
+                                            if clean_row:
+                                                text += "\n" + " | ".join(clean_row)
+                                
+                                if text.strip():
+                                    docs.append(Document(page_content=text, metadata={"source": path}))
+                                
+                                page_count += 1
+                                if page_count > 50: 
+                                    print(f"⚠️ {path} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
+                                    break
+                    except Exception as e:
+                        print(f"❌ PDF table parsing error ({path}):", e)
+                        
                 elif f.endswith(".docx"):
-                    from langchain_community.document_loaders import Docx2txtLoader
-                    docs += Docx2txtLoader(path).load()
+                    # [🔥 টেবিল আপডেট]: ওয়ার্ড ফাইলের সাধারণ প্যারাগ্রাফ ও টেবিল আলাদা করে রিড করা
+                    import docx as py_docx
+                    try:
+                        doc_obj = py_docx.Document(path)
+                        full_text = []
+                        
+                        # প্যারাগ্রাফ রিড করা
+                        for para in doc_obj.paragraphs:
+                            if para.text.strip():
+                                full_text.append(para.text)
+                                
+                        # টেবিলের ডেটা কলাম-রো অনুযায়ী রিড করা
+                        for table in doc_obj.tables:
+                            full_text.append("\n--- [Table Data] ---")
+                            for row in table.rows:
+                                row_data = [cell.text.strip() for cell in row.cells]
+                                if any(row_data): 
+                                    full_text.append(" | ".join(row_data))
+                                    
+                        text_content = "\n".join(full_text)
+                        if text_content.strip():
+                            docs.append(Document(page_content=text_content, metadata={"source": path}))
+                    except Exception as e:
+                        print(f"❌ Word table parsing error ({path}):", e)
+                        
                 elif f.endswith(".xlsx"):
                     df = pd.read_excel(path)
                     docs.append(Document(page_content=df.astype(str).to_string(), metadata={"source": path}))
+                    
             except Exception as e:
-                print(f"❌ File error ({path}):", e)
+                print(f"❌ General File error ({path}):", e)
+else:
+    print("⚠️ 'bitac_files' folder not found!")
 
 # ================= WEB SCRAPING =================
 urls = [
@@ -83,24 +128,20 @@ for url in urls:
 
     print(f"🌐 Scraping URL: {url}")
     try:
-        # রিকোয়েস্ট হেডারে ব্রাউজার ট্রিকস
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         }
         
-        # [🚨 ব্রেকিং সেফটি ফিক্স]: রিকোয়েস্টে রিডাইরেকশন এবং কড়া টাইমআউট (৪ সেকেন্ড) দেওয়া হলো
         r = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
         
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
             
-            # অপ্রয়োজনীয় এলিমেন্ট ডিকম্পোজ
             for script in soup(["script", "style", "noscript", "header", "footer", "nav", "iframe"]):
                 script.decompose()
                 
             text = soup.get_text(separator=" ", strip=True)
-            # টেক্সট যেন খুব বেশি বড় হয়ে কন্টেইনার হ্যাং না করে (সর্বোচ্চ ৩০,০০০ ক্যারেক্টার সেফটি)
             if text:
                 clean_text = text[:30000]
                 docs.append(Document(page_content=clean_text, metadata={"source": url}))
@@ -109,7 +150,6 @@ for url in urls:
             print(f"⚠️ Skipped (Status: {r.status_code})")
             
     except Exception as e:
-        # সাইট ডাউন বা স্লো থাকলে স্ক্রিপ্ট না থামিয়ে সরাসরি পরের ইউআরএল-এ চলে যাবে
         print(f"⏭️ URL Skipped due to network/timeout: {url}")
 
 # ================= SPLIT & UPLOAD =================
@@ -127,7 +167,6 @@ else:
 
     texts = [c.page_content for c in chunks]
     
-    # Cohere এর রেট লিমিট ও গিটহাব ক্র্যাশ এড়াতে ৫০টি করে ব্যাচ প্রসেস
     batch_size = 50
     vectors = []
     for i in range(0, len(texts), batch_size):

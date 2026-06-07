@@ -45,34 +45,33 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# [উন্নতি ১]: k কমিয়ে ৩ করা হয়েছে এবং score_threshold যোগ করা হয়েছে
-# এর ফলে ডাটাবেজের তথ্যের সাথে মিল না থাকলে জোর করে ভুল ডেটা তুলে আনবে না
+# [🔥 নতুন আপডেট]: 'similarity_score_threshold' এর পরিবর্তে 'mmr' সার্চ টাইপ ব্যবহার করা হলো
+# এটি ইউজার নিজের ভাষায় ঘুরিয়ে প্রশ্ন করলেও তথ্যের মূল অর্থ বা ইনটেন্ট (Intent) ম্যাচ করতে পারে
 retriever = vectorstore.as_retriever(
-    search_type="similarity_score_threshold",
+    search_type="mmr",
     search_kwargs={
-        "k": 3,
-        "score_threshold": 0.55  # ৫৫% মিল না থাকলে তথ্য রিট্রিভ করবে না
+        "k": 4,              # মডেলের কাছে একসাথে ৪টি সেরা প্রাসঙ্গিক টুকরো পাঠাবে
+        "fetch_k": 10,       # ডাটাবেজ থেকে প্রথমে ১০টি সম্ভাব্য খণ্ড টানবে, তারপর ফিল্টার করবে
+        "lambda_mult": 0.6   # তথ্যের বৈচিত্র্য এবং মিলের মধ্যে একটি পারফেক্ট ব্যালেন্স রাখবে
     }
 )
 
 # ================= LLM =================
-
-# [মডেল আপডেট]: 'command-r' এর পরিবর্তে একটিভ লেটেস্ট মডেল বসানো হলো
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.0  # মডেলের বানিয়ে কথা বলা বন্ধ রাখবে
+    temperature=0.0  # মডেলের নিজের থেকে তথ্য বানিয়ে বানিয়ে বাড়িয়ে কথা বলা বন্ধ রাখবে
 )
 
 # ================= PROMPT =================
-# [উন্নতি ৩]: প্রম্পটকে আরও কঠোর ও প্রফেশনাল করা হয়েছে যেন মডেল বাউন্ডারি ক্রস না করে
+# [🔥 নতুন আপডেট]: প্রম্পটকে কিছুটা বুদ্ধিমান করা হয়েছে যাতে হুবহু বাক্য না মিললেও কনটেক্সটের অর্থ বুঝে বট উত্তর দিতে পারে
 system_prompt = """
 You are the official BITAC AI Assistant.
 
-CRITICAL INSTRUCTIONS:
-1. Rely ONLY on the provided context below to answer the user's question.
-2. If the context does not contain the exact answer, strictly reply with: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
-3. Do not assume, extrapolate, or invent any facts under any circumstances. If the information is missing, say you don't know.
+Instructions:
+1. Answer the user's question by carefully understanding the core meaning of the provided context below.
+2. Even if the user words the question differently or asks in natural spoken language/Banglish, match the intent with the context and answer logically.
+3. Do not assume, extrapolate, or invent any facts. If the information is completely missing from the context, strictly reply with: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
 4. If the user greets you (e.g., Hi, Hello, কেমন আছেন), reply politely.
 5. If the user writes in Bangla, reply clearly in Bangla. If English, reply in English.
 
@@ -118,12 +117,10 @@ async def chat(req: ChatRequest):
         }
 
     except Exception as e:
-        # [🚨 মোস্ট ক্রিশিয়াল]: এটি Render লগে আসল এররটি প্রিন্ট করে দেবে
         import traceback
         print("❌ CRITICAL CHAT ERROR DETECTED:")
         print(traceback.format_exc()) 
         
-        # সার্ভার যেন ৫০০ এরর না দিয়ে ফ্রন্টএন্ডে সেফ মেসেজ পাঠায়
         return {
             "question": req.message,
             "answer": "দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে Render-এর Logs ট্যাব চেক করুন।"
@@ -259,7 +256,6 @@ async function send() {
     addMessage(text, "user");
     input.value = "";
 
-    // লোডিং এলিমেন্ট তৈরি (Typing... টেক্সটকে সুন্দর করা হয়েছে)
     let typingDiv = document.createElement("div");
     typingDiv.className = "msg bot";
     typingDiv.innerHTML = "<i>বট ভাবছে...</i>";
@@ -274,7 +270,7 @@ async function send() {
         });
 
         let data = await res.json();
-        messages.removeChild(typingDiv); // লোডিং রিমুভ
+        messages.removeChild(typingDiv); 
 
         if (data.answer) {
             addMessage(data.answer, "bot");

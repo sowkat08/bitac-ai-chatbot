@@ -1,6 +1,7 @@
 import os
+import asyncio
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -8,13 +9,11 @@ from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
 
-from langchain.chains import create_retrieval_chain
-from langchain.chains import create_history_aware_retriever
-from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-# ================= APP =================
+# ================= ১. অ্যাপ সেটআপ ও CORS =================
 app = FastAPI(title="BITAC AI Smart Chatbot")
 
 app.add_middleware(
@@ -24,19 +23,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================= ENV =================
+# ================= ২. এনভায়রনমেন্ট ভেরিয়েবল =================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
 
 if not PINECONE_API_KEY or not COHERE_API_KEY:
-    raise ValueError("Missing API keys")
+    raise ValueError("Missing API keys in Environment Variables!")
 
-# ================= PINECONE =================
+# ================= ৩. পাইনকোন ও রিট্রিভার সেটআপ =================
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
-# ================= EMBEDDINGS =================
 embeddings = CohereEmbeddings(
     model="embed-multilingual-v3.0",
     cohere_api_key=COHERE_API_KEY
@@ -47,49 +45,30 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# [🔥 MMR রিট্রিভার]: তথ্যের মূল অর্থ বা ইনটেন্ট ম্যাচ করার জন্য
+# ⚡ [স্পীড বুস্ট]: MMR এর ল্যাগ বাদ দিয়ে similarity সার্চ এবং k=5 করা হয়েছে সঠিক উত্তরের জন্য
 retriever = vectorstore.as_retriever(
-    search_type="mmr",
-    search_kwargs={
-        "k": 4,              
-        "fetch_k": 10,       
-        "lambda_mult": 0.6   
-    }
+    search_type="similarity",
+    search_kwargs={"k": 5}
 )
 
-# ================= LLM =================
+# ================= ৪. লার্জ ল্যাঙ্গুয়েজ মডেল (LLM) =================
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.0  
+    temperature=0.0,
+    streaming=True
 )
 
-# ================= CONTEXTUALIZE QUESTION PROMPT (MEMORY RETRIEVER) =================
-# এই অংশটি চ্যাট হিস্ট্রি দেখে ইউজারের আধো-আধো বা ছোট প্রশ্নকে পূর্ণাঙ্গ প্রশ্নে রূপান্তর করবে
-contextualize_q_system_prompt = """
-Given a chat history and the latest user question which might reference context in the chat history, 
-formulate a standalone question which can be understood without the chat history. 
-Do NOT answer the question, just reformulate it if needed and otherwise return it as is.
-"""
-contextualize_q_prompt = ChatPromptTemplate.from_messages([
-    ("system", contextualize_q_system_prompt),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
-])
-
-# হিস্ট্রি ট্র্যাক করার স্মার্ট রিট্রিভার তৈরি
-history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
-
-# ================= MAIN PROMPT =================
+# ================= ৫. মূল সিস্টেম প্রম্পট (বাংলায় নিখুঁত গাইডলাইন) =================
 system_prompt = """
-You are the official BITAC AI Assistant.
+তুমি হলে BITAC (বিটাক)-এর অফিসিয়াল এআই অ্যাসিস্ট্যান্ট। 
 
-Instructions:
-1. Answer the user's question by carefully understanding the core meaning of the provided context below.
-2. Even if the user words the question differently or asks in natural spoken language/Banglish, match the intent with the context and answer logically.
-3. Do not assume, extrapolate, or invent any facts. If the information is completely missing from the context, strictly reply with: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
-4. If the user greets you (e.g., Hi, Hello, কেমন আছেন), reply politely.
-5. If the user writes in Bangla, reply clearly in Bangla. If English, reply in English.
+নিয়মাবলী (কঠোরভাবে পালনীয়):
+১. নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে ইউজারের প্রশ্নের সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
+২. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
+৩. যদি কোনো তথ্যই বা প্রাসঙ্গিক কোনো লাইন Context-এ না থাকে, তবে বানিয়ে কিছু বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
+৪. ইউজার যদি আঞ্চলিক ভাষায় বা বাংলিশে (Banglish) প্রশ্ন করে, তবে তার মূল উদ্দেশ্য বুঝে Context-এর সাথে মিলিয়ে যুক্তিসঙ্গত উত্তর দাও।
+৫. উত্তর সবসময় স্পষ্ট, সহজ এবং প্রাঞ্জল বাংলায় হতে হবে।
 
 Context:
 {context}
@@ -97,63 +76,87 @@ Context:
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
-    MessagesPlaceholder(variable_name="chat_history"), # মূল প্রম্পটেও মেমোরি ইনজেক্ট করা হলো
+    MessagesPlaceholder(variable_name="chat_history"), 
     ("human", "{input}")
 ])
 
 doc_chain = create_stuff_documents_chain(llm, prompt)
-# এখানে মূল রিট্রিভারের বদলে মেমোরি-অ্যাওয়ার রিট্রিভারটি দেওয়া হলো
-rag_chain = create_retrieval_chain(history_aware_retriever, doc_chain)
 
-# ================= REQUEST MODEL =================
+# ================= ৬. ডাটা মডেল =================
 class ChatRequest(BaseModel):
     message: str
-    history: list = [] # ফ্রন্টঅ্যান্ডের চ্যাট হিস্ট্রি রিসিভ করার অ্যারে
+    history: list = []
 
-# ================= CHAT API =================
+# ================= ৭. স্মার্ট রেসপন্স জেনারেটর (Query Optimizer + Streaming) =================
+async def response_generator(query: str, chat_history: list):
+    try:
+        optimized_query = query
+        history_context = ""
+        
+        if chat_history:
+            history_context = "\\n".join([f"{type(m).__name__}: {m.content}" for m in chat_history[-2:]])
+        
+        # ⚡ [ইউনিভার্সাল অপ্টিমাইজার]: ১ শব্দ বা সংক্ষিপ্ত প্রশ্নকে ডকের ভেতরের বড় বাক্যে কনভার্ট করবে (সব বিষয়ের জন্য)
+        optimization_prompt = f"""
+        Task: Convert the user's short, informal, or single-word question into 2-3 formal Bangla search keywords/phrases to find the exact matching documents from a BITAC vector database.
+        
+        Rules:
+        1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যতা", "hostel", "sepa"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "হোস্টেল আবাসন সুবিধা").
+        2. Combine the current question with the recent chat history to make the query precise.
+        3. Do not assume anything outside BITAC's context.
+        
+        Chat History:
+        {history_context}
+        
+        Current User Question: {query}
+        
+        Instructions: Output ONLY the expanded Bangla search phrases. Do not write any English, explanations, or punctuation.
+        """
+        
+        opt_response = await llm.ainvoke(optimization_prompt)
+        optimized_query = opt_response.content.strip()
+        print(f"🔍 Optimized Search Query: {optimized_query}")
+        
+        # লেভেল ১ সার্চ: অপ্টিমাইজড কুয়েরি দিয়ে খোঁজা
+        docs = await asyncio.to_thread(retriever.get_relevant_documents, optimized_query)
+        
+        # লেভেল ২ সার্চ (Fallback): যদি ডেটা না পায়, মূল প্রশ্ন দিয়ে খোঁজা
+        if not docs:
+            docs = await asyncio.to_thread(retriever.get_relevant_documents, query)
+
+        # লেভেল ৩ সার্চ (Fallback 2): ১ শব্দের ক্ষেত্রে নিরাপদ ব্যাকআপ
+        if not docs and len(query.split()) == 1:
+            docs = await asyncio.to_thread(retriever.get_relevant_documents, f"{query} বিটাক")
+
+        # ক্লায়েন্ট ব্রাউজারে ডাটা স্ট্রিমিং শুরু
+        async for event in doc_chain.astream({
+            "input": query,
+            "chat_history": chat_history,
+            "context": docs
+        }):
+            if event:
+                yield event
+    except Exception as e:
+        yield f"ত্রুটি ঘটেছে: {str(e)}"
+
+# ================= ৮. চ্যাট এপিআই এন্ডপয়েন্ট =================
 @app.post("/chat")
 async def chat(req: ChatRequest):
     if not req.message or not req.message.strip():
-        return {"question": req.message, "answer": "অনুগ্রহ করে কিছু লিখুন।"}
+        return StreamingResponse((add for add in ["অনুগ্রহ করে কিছু লিখুন।"]), media_type="text/plain")
 
-    try:
-        print(f"💬 Incoming Question: {req.message}")
-        
-        # ফ্রন্টঅ্যান্ড থেকে আসা মেমোরি লিস্টকে ল্যাংচেইনের মেসেজ ফরম্যাটে (Human/AI) রূপান্তর
-        chat_history = []
-        for msg in req.history:
-            if msg.get("type") == "user":
-                chat_history.append(HumanMessage(content=msg.get("text")))
-            elif msg.get("type") == "bot":
-                chat_history.append(AIMessage(content=msg.get("text")))
-        
-        # চেইনে ইনপুট এবং চ্যাট হিস্ট্রি একসাথে পাস করা
-        result = rag_chain.invoke({
-            "input": req.message,
-            "chat_history": chat_history
-        })
-        
-        answer = result.get("answer", "").strip()
+    print(f"💬 Incoming Question: {req.message}")
+    
+    chat_history = []
+    for msg in req.history:
+        if msg.get("type") == "user":
+            chat_history.append(HumanMessage(content=msg.get("text")))
+        elif msg.get("type") == "bot":
+            chat_history.append(AIMessage(content=msg.get("text")))
 
-        if not answer or "I don't know" in answer:
-            answer = "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
+    return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-        return {
-            "question": req.message,
-            "answer": answer
-        }
-
-    except Exception as e:
-        import traceback
-        print("❌ CRITICAL CHAT ERROR DETECTED:")
-        print(traceback.format_exc()) 
-        
-        return {
-            "question": req.message,
-            "answer": "দুঃখিত, এই মুহূর্তে উত্তর তৈরি করা যাচ্ছে না। অনুগ্রহ করে Render-এর Logs ট্যাব চেক করুন।"
-        }
-
-# ================= UI (SMART CHAT WITH MEMORY) =================
+# ================= ৯. ইউজার ইন্টারফেস (UI with Live Streaming View) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -162,88 +165,17 @@ def home():
 <head>
     <title>BITAC AI Chatbot</title>
     <style>
-        body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #0f172a;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-        }
-
-        .chatbox {
-            width: 420px;
-            height: 650px;
-            background: white;
-            border-radius: 15px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-        }
-
-        .header {
-            background: #1e3a8a;
-            color: white;
-            padding: 15px;
-            text-align: center;
-            font-weight: bold;
-        }
-
-        .messages {
-            flex: 1;
-            padding: 10px;
-            overflow-y: auto;
-            background: #f1f5f9;
-        }
-
-        .msg {
-            margin: 8px 0;
-            padding: 10px;
-            border-radius: 10px;
-            max-width: 80%;
-            white-space: pre-wrap;
-            font-size: 14px;
-            line-height: 1.4;
-        }
-
-        .user {
-            background: #2563eb;
-            color: white;
-            margin-left: auto;
-        }
-
-        .bot {
-            background: #e5e7eb;
-            color: #1e293b;
-            margin-right: auto;
-        }
-
-        .input-box {
-            display: flex;
-            border-top: 1px solid #ddd;
-        }
-
-        input {
-            flex: 1;
-            padding: 12px;
-            border: none;
-            outline: none;
-        }
-
-        button {
-            padding: 12px 15px;
-            border: none;
-            background: #2563eb;
-            color: white;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
-        button:hover {
-            background: #1d4ed8;
-        }
+        body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .chatbox { width: 420px; height: 650px; background: white; border-radius: 15px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .header { background: #1e3a8a; color: white; padding: 15px; text-align: center; font-weight: bold; }
+        .messages { flex: 1; padding: 10px; overflow-y: auto; background: #f1f5f9; }
+        .msg { margin: 8px 0; padding: 10px; border-radius: 10px; max-width: 80%; white-space: pre-wrap; font-size: 14px; line-height: 1.4; }
+        .user { background: #2563eb; color: white; margin-left: auto; }
+        .bot { background: #e5e7eb; color: #1e293b; margin-right: auto; }
+        .input-box { display: flex; border-top: 1px solid #ddd; }
+        input { flex: 1; padding: 12px; border: none; outline: none; }
+        button { padding: 12px 15px; border: none; background: #2563eb; color: white; cursor: pointer; font-weight: bold; }
+        button:hover { background: #1d4ed8; }
     </style>
 </head>
 <body>
@@ -259,7 +191,7 @@ def home():
 
 <script>
 const messages = document.getElementById("messages");
-let chatHistory = []; // [🔥 মেমোরি আপডেট]: ব্রাউজারে হিস্ট্রি সেভ রাখার গ্লোবাল ভেরিয়েবল
+let chatHistory = []; 
 
 function addMessage(text, type) {
     let div = document.createElement("div");
@@ -267,12 +199,11 @@ function addMessage(text, type) {
     div.innerText = text;
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
+    return div;
 }
 
 function handleKeyPress(e) {
-    if (e.key === 'Enter') {
-        send();
-    }
+    if (e.key === 'Enter') { send(); }
 }
 
 async function send() {
@@ -284,14 +215,9 @@ async function send() {
     addMessage(text, "user");
     input.value = "";
 
-    let typingDiv = document.createElement("div");
-    typingDiv.className = "msg bot";
-    typingDiv.innerHTML = "<i>...</i>";
-    messages.appendChild(typingDiv);
-    messages.scrollTop = messages.scrollHeight;
-
+    let botMessageDiv = addMessage("", "bot");
+    
     try {
-        // [🔥 মেমোরি আপডেট]: রিকোয়েস্ট বডিতে এখন চ্যাট হিস্ট্রিও পাঠানো হচ্ছে
         let res = await fetch("/chat", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
@@ -301,27 +227,33 @@ async function send() {
             })
         });
 
-        let data = await res.json();
-        messages.removeChild(typingDiv); 
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let fullAnswer = "";
 
-        if (data.answer) {
-            addMessage(data.answer, "bot");
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
             
-            // সফলভাবে উত্তর আসার পর কারেন্ট মেসেজ জোড়া মেমোরিতে পুশ করা হচ্ছে
+            const chunk = decoder.decode(value, { stream: true });
+            fullAnswer += chunk;
+            botMessageDiv.innerText = fullAnswer; 
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        if (fullAnswer.trim()) {
             chatHistory.push({type: "user", text: text});
-            chatHistory.push({type: "bot", text: data.answer});
+            chatHistory.push({type: "bot", text: fullAnswer.trim()});
             
-            // মেমোরি খুব বেশি বড় হয়ে যেন ব্রাউজার স্লো না করে (সর্বোচ্চ শেষ ৫ জোড়া কথা মনে রাখবে)
             if (chatHistory.length > 10) {
                 chatHistory.shift();
                 chatHistory.shift();
             }
         } else {
-            addMessage("দুঃখিত, কোনো উত্তর পাওয়া যায়নি।", "bot");
+            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
         }
     } catch (error) {
-        messages.removeChild(typingDiv);
-        addMessage("সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।", "bot");
+        botMessageDiv.innerText = "সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।";
     }
 }
 </script>

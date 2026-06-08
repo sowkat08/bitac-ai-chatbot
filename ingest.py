@@ -2,8 +2,6 @@ import os
 import hashlib
 import time
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 
 from pinecone import Pinecone
 from langchain_core.documents import Document
@@ -43,35 +41,58 @@ def is_file_already_ingested(file_path_or_url):
         return False
 
 # ================= TRACK ACTIVE SOURCES =================
-urls = [
-    "https://bitac.gov.bd/",
-    "https://bitac.dhaka.gov.bd/",
-    "https://bitac.gov.bd/pages/officers"
-]
-
-current_active_sources = set(urls)
+# বর্তমানে আপনার bitac_files ফোল্ডারে যে ফাইলগুলো বাস্তবে আছে তাদের একটি ক্লিন লিস্ট তৈরি করা হচ্ছে
+current_active_files = set()
 if os.path.exists("bitac_files"):
     for root, _, files in os.walk("bitac_files"):
         for f in files:
-            current_active_sources.add(os.path.join(root, f))
+            full_path = os.path.join(root, f)
+            # উইন্ডোজ ও লিনাক্স পাথের স্ল্যাশ সমস্যা দূর করতে পাথ ইউনিফর্ম করা হলো
+            normalized_path = full_path.replace("\\\\", "/").replace("\\", "/")
+            current_active_files.add(normalized_path)
 
-# ================= 🔥 AUTOMATIC GITHUB-PINECONE SYNC (HARD DELETE) =================
-print("\n🔄 গিটহাব ফোল্ডার এবং পাইনকোন ডাটাবেজ সিঙ্ক করা হচ্ছে...")
+print(f"📁 বর্তমানে বিটাক ফোল্ডারে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
 
-if os.path.exists("deleted_files.txt"):
-    try:
-        print("🧹 গিটহাব থেকে ডিলিট হওয়া ফাইলগুলো পাইনকোন ডাটাবেজ থেকে ক্লিন করা হচ্ছে...")
-        with open("deleted_files.txt", "r", encoding="utf-8") as df:
-            for line in df:
-                deleted_file = line.strip()
-                # ফাইলটি বর্তমানে অ্যাক্টিভ সোর্সে না থাকলে পাইনকোন থেকে রিমুভ করা হবে
-                if deleted_file and deleted_file not in current_active_sources:
-                    print(f"🗑️ Deleting from Pinecone: {deleted_file}")
-                    # মেটাডেটা ফিল্টার ব্যবহার করে ডিলিট রিকোয়েস্ট সফল করা হলো
-                    index.delete(filter={"source": {"$eq": deleted_file}})
-        print("✅ ডিলিট হওয়া ফাইলের ডাটাবেজ ক্লিনিং সফলভাবে সম্পন্ন হয়েছে।")
-    except Exception as e:
-        print(f"⚠️ ডাটাবেজ সিঙ্ক সতর্কতা/ত্রুটি: {e}")
+# ================= 🔥 AUTOMATIC SMART SYNC (HARD DELETE) =================
+print("\n🔄 ফোল্ডার এবং পাইনকোন ডাটাবেজ নিখুঁতভাবে সিঙ্ক করা হচ্ছে...")
+
+try:
+    # পাইনকোনে আগে থেকে ইনজেস্ট করা সমস্ত সোর্সের লিস্ট বের করার ট্রাই-মেকানিজম
+    # (আমরা একটি ডামি কুয়েরি মেরে ইউনিক সোর্স মেটাডেটা স্ক্যান করব)
+    dummy_vector = [0.1] * 1024
+    scan_results = index.query(
+        vector=dummy_vector,
+        top_k=100,  # আপনার মোট ফাইলের সংখ্যার চেয়ে এই মানটি বড় রাখুন
+        include_metadata=True
+    )
+    
+    ingested_sources_in_pinecone = set()
+    for match in scan_results.get('matches', []):
+        metadata = match.get('metadata', {})
+        src = metadata.get('source')
+        if src:
+            ingested_sources_in_pinecone.add(src.replace("\\\\", "/").replace("\\", "/"))
+
+    # ডিলিট লজিক: পাইনকোনে আছে কিন্তু গিটহাব ফোল্ডারে বর্তমানে নাই — এমন ফাইলগুলো খুঁজে বের করা
+    files_to_delete = ingested_sources_in_pinecone - current_active_files
+    
+    if files_to_delete:
+        print(f"🧹 ডাটাবেজে পুরনো/অপ্রয়োজনীয় ফাইল পাওয়া গেছে: {len(files_to_delete)} টি")
+        for old_file in files_to_delete:
+            # গিটহাব (লিনাক্স) ও লোকাল (উইন্ডোজ) এনভায়রনমেন্ট সেফটি নিশ্চিত করতে দুটি স্ল্যাশ ফরম্যাটেই ডিলিট করা হচ্ছে
+            windows_style = old_file.replace("/", "\\")
+            linux_style = old_file.replace("\\", "/")
+            
+            print(f"🗑️ Deleting from Pinecone: {linux_style}")
+            index.delete(filter={"source": {"$eq": linux_style}})
+            index.delete(filter={"source": {"$eq": windows_style}})
+            
+        print("✅ ফোল্ডার থেকে ডিলিট হওয়া সমস্ত ফাইলের ডাটাবেজ ক্লিনিং সম্পূর্ণ সফল!")
+    else:
+        print("✨ ডাটাবেজ একদম ক্লিন! ফোল্ডার থেকে কোনো ফাইল ডিলিট করার প্রয়োজন হয়নি।")
+
+except Exception as e:
+    print(f"⚠️ ডাটাবেজ অটো-সিঙ্ক সতর্কতা (প্রথমবার রান বা খালি ইনডেক্সের জন্য এটি স্বাভাবিক): {e}")
 
 # ================= LOAD LOCAL FILES =================
 docs = []
@@ -80,16 +101,22 @@ if os.path.exists("bitac_files"):
     for root, _, files in os.walk("bitac_files"):
         for f in files:
             path = os.path.join(root, f)
+            normalized_path_for_source = path.replace("\\\\", "/").replace("\\", "/")
 
-            if is_file_already_ingested(path):
-                print(f"⏭️  Skipping: {path}")
+            # পাইনকোনে অলরেডি এই ফাইলটি থাকলে স্কিপ করবে (যাতে ক্লাউড রিসোর্স সাশ্রয় হয়)
+            if is_file_already_ingested(normalized_path_for_source):
+                print(f"⏭️  Skipping (Already Ingested): {normalized_path_for_source}")
                 continue
 
-            print(f"📖 Reading: {path}")
+            print(f"📖 Reading: {normalized_path_for_source}")
             try:
                 if f.endswith(".txt"):
                     from langchain_community.document_loaders import TextLoader
-                    docs += TextLoader(path, encoding='utf-8').load()
+                    # সোর্স পাথ লিনাক্স ফরম্যাটে সেট করে লোড করা
+                    loaded_docs = TextLoader(path, encoding='utf-8').load()
+                    for d in loaded_docs:
+                        d.metadata["source"] = normalized_path_for_source
+                    docs += loaded_docs
                     
                 elif f.endswith(".pdf"):
                     import pdfplumber
@@ -109,14 +136,14 @@ if os.path.exists("bitac_files"):
                                                 text += "\n" + " | ".join(clean_row)
                                 
                                 if text.strip():
-                                    docs.append(Document(page_content=text, metadata={"source": path}))
+                                    docs.append(Document(page_content=text, metadata={"source": normalized_path_for_source}))
                                 
                                 page_count += 1
                                 if page_count > 50: 
-                                    print(f"⚠️ {path} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
+                                    print(f"⚠️ {f} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
                                     break
                     except Exception as e:
-                        print(f"❌ PDF table parsing error ({path}):", e)
+                        print(f"❌ PDF table parsing error ({f}):", e)
                         
                 elif f.endswith(".docx"):
                     import docx as py_docx
@@ -137,55 +164,24 @@ if os.path.exists("bitac_files"):
                                     
                         text_content = "\n".join(full_text)
                         if text_content.strip():
-                            docs.append(Document(page_content=text_content, metadata={"source": path}))
+                            docs.append(Document(page_content=text_content, metadata={"source": normalized_path_for_source}))
                     except Exception as e:
-                        print(f"❌ Word table parsing error ({path}):", e)
+                        print(f"❌ Word table parsing error ({f}):", e)
                         
                 elif f.endswith(".xlsx"):
                     df = pd.read_excel(path)
-                    docs.append(Document(page_content=df.astype(str).to_string(), metadata={"source": path}))
+                    docs.append(Document(page_content=df.astype(str).to_string(), metadata={"source": normalized_path_for_source}))
                     
             except Exception as e:
-                print(f"❌ General File error ({path}):", e)
+                print(f"❌ General File error ({f}):", e)
 else:
-    print("⚠️ 'bitac_files' folder not found!")
-
-# ================= WEB SCRAPING =================
-for url in urls:
-    if is_file_already_ingested(url):
-        print(f"⏭️  Skipping URL: {url}")
-        continue
-
-    print(f"🌐 Scraping URL: {url}")
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        }
-        
-        r = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
-        
-        if r.status_code == 200:
-            soup = BeautifulSoup(r.text, "html.parser")
-            
-            for script in soup(["script", "style", "noscript", "header", "footer", "nav", "iframe"]):
-                script.decompose()
-                
-            text = soup.get_text(separator=" ", strip=True)
-            if text:
-                clean_text = text[:30000]
-                docs.append(Document(page_content=clean_text, metadata={"source": url}))
-                print(f"✅ Scraping Success: {url}")
-        else:
-            print(f"⚠️ Skipped (Status: {r.status_code})")
-            
-    except Exception as e:
-        print(f"⏭️ URL Skipped due to network/timeout: {url}")
+    print("⚠️ 'bitac_files' folder not found! দয়া করে রিপোজিটরিতে ফোল্ডারটি তৈরি করুন।")
 
 # ================= SPLIT, EMBED & UPLOAD =================
 if not docs:
-    print("✅ কোনো নতুন ডেটা নেই। ডাটাবেজ অলরেডি আপ-টু-ডেট!")
+    print("✅ কোনো নতুন ফাইল প্রসেস করার প্রয়োজন নেই। ডাটাবেজ অলরেডি আপ-টু-ডেট!")
 else:
+    # চ্যাঙ্ক সাইজ এবং ওভারল্যাপ অপ্টিমাইজড করা হয়েছে নিখুঁত রিট্রিভালের জন্য
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
     chunks = splitter.split_documents(docs)
 

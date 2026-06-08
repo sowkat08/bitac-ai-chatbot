@@ -27,7 +27,6 @@ def uid(text, src):
 # ================= SMART CHECKING FUNCTION =================
 def is_file_already_ingested(file_path_or_url):
     try:
-        # embed-multilingual-v3.0 এর ডাইমেনশন ১০২৪। ডামি ভেক্টর ১ দিয়ে গুণ করে তৈরি করা হলো।
         dummy_vector = [0.1] * 1024
         results = index.query(
             vector=dummy_vector,
@@ -47,22 +46,19 @@ if os.path.exists("bitac_files"):
     for root, _, files in os.walk("bitac_files"):
         for f in files:
             full_path = os.path.join(root, f)
-            # উইন্ডোজ ও লিনাক্স পাথের স্ল্যাশ সমস্যা দূর করতে পাথ ইউনিফর্ম করা হলো
             normalized_path = full_path.replace("\\\\", "/").replace("\\", "/")
             current_active_files.add(normalized_path)
 
-print(f"📁 বর্তমানে বিটাক ফোল্ডারে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
+print(f"📁 বর্তমানে বিটাক ফোল্ডারটিতে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
 
 # ================= 🔥 AUTOMATIC SMART SYNC (HARD DELETE) =================
 print("\n🔄 ফোল্ডার এবং পাইনকোন ডাটাবেজ নিখুঁতভাবে সিঙ্ক করা হচ্ছে...")
 
 try:
-    # পাইনকোনে আগে থেকে ইনজেস্ট করা সমস্ত সোর্সের লিস্ট বের করার ট্রাই-মেকানিজম
-    # (আমরা একটি ডামি কুয়েরি মেরে ইউনিক সোর্স মেটাডেটা স্ক্যান করব)
     dummy_vector = [0.1] * 1024
     scan_results = index.query(
         vector=dummy_vector,
-        top_k=100,  # আপনার মোট ফাইলের সংখ্যার চেয়ে এই মানটি বড় রাখুন
+        top_k=100,  
         include_metadata=True
     )
     
@@ -79,7 +75,6 @@ try:
     if files_to_delete:
         print(f"🧹 ডাটাবেজে পুরনো/অপ্রয়োজনীয় ফাইল পাওয়া গেছে: {len(files_to_delete)} টি")
         for old_file in files_to_delete:
-            # গিটহাব (লিনাক্স) ও লোকাল (উইন্ডোজ) এনভায়রনমেন্ট সেফটি নিশ্চিত করতে দুটি স্ল্যাশ ফরম্যাটেই ডিলিট করা হচ্ছে
             windows_style = old_file.replace("/", "\\")
             linux_style = old_file.replace("\\", "/")
             
@@ -103,7 +98,6 @@ if os.path.exists("bitac_files"):
             path = os.path.join(root, f)
             normalized_path_for_source = path.replace("\\\\", "/").replace("\\", "/")
 
-            # পাইনকোনে অলরেডি এই ফাইলটি থাকলে স্কিপ করবে (যাতে ক্লাউড রিসোর্স সাশ্রয় হয়)
             if is_file_already_ingested(normalized_path_for_source):
                 print(f"⏭️  Skipping (Already Ingested): {normalized_path_for_source}")
                 continue
@@ -112,7 +106,6 @@ if os.path.exists("bitac_files"):
             try:
                 if f.endswith(".txt"):
                     from langchain_community.document_loaders import TextLoader
-                    # সোর্স পাথ লিনাক্স ফরম্যাটে সেট করে লোড করা
                     loaded_docs = TextLoader(path, encoding='utf-8').load()
                     for d in loaded_docs:
                         d.metadata["source"] = normalized_path_for_source
@@ -175,13 +168,12 @@ if os.path.exists("bitac_files"):
             except Exception as e:
                 print(f"❌ General File error ({f}):", e)
 else:
-    print("⚠️ 'bitac_files' folder not found! দয়া করে রিপোজিটরিতে ফোল্ডারটি তৈরি করুন।")
+    print("⚠️ 'bitac_files' folder not found!")
 
 # ================= SPLIT, EMBED & UPLOAD =================
 if not docs:
     print("✅ কোনো নতুন ফাইল প্রসেস করার প্রয়োজন নেই। ডাটাবেজ অলরেডি আপ-টু-ডেট!")
 else:
-    # চ্যাঙ্ক সাইজ এবং ওভারল্যাপ অপ্টিমাইজড করা হয়েছে নিখুঁত রিট্রিভালের জন্য
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
     chunks = splitter.split_documents(docs)
 

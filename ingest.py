@@ -12,7 +12,7 @@ from langchain_cohere import CohereEmbeddings
 from cohere.errors.too_many_requests_error import TooManyRequestsError
 
 # ================= CONFIG =================
-INDEX_NAME = "bitac-chatbot"
+INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
@@ -29,7 +29,7 @@ def uid(text, src):
 # ================= SMART CHECKING FUNCTION =================
 def is_file_already_ingested(file_path_or_url):
     try:
-        # [ফিক্সড]: জিরো ভেক্টরের বদলে ১ দিয়ে গুণ করে একটি ডামি ভেক্টর তৈরি করা হলো যেন Pinecone ক্র্যাশ না করে
+        # embed-multilingual-v3.0 এর ডাইমেনশন ১০২৪। ডামি ভেক্টর ১ দিয়ে গুণ করে তৈরি করা হলো।
         dummy_vector = [0.1] * 1024
         results = index.query(
             vector=dummy_vector,
@@ -55,24 +55,23 @@ if os.path.exists("bitac_files"):
         for f in files:
             current_active_sources.add(os.path.join(root, f))
 
-# ================= AUTOMATIC GITHUB-PINECONE SYNC (DELETE LOGIC) =================
+# ================= 🔥 AUTOMATIC GITHUB-PINECONE SYNC (HARD DELETE) =================
 print("\n🔄 গিটহাব ফোল্ডার এবং পাইনকোন ডাটাবেজ সিঙ্ক করা হচ্ছে...")
 
-# [লাইভ ফিক্স]: যদি আপনি গিটহাব থেকে কোনো ফাইল ডিলিট করে পুশ করেন, 
-# তবে এই স্ক্রিপ্টটি রান হওয়া মাত্রই পাইনকোন থেকে ওই ফাইলের সব চাঙ্ক ডিলিট হয়ে যাবে।
 if os.path.exists("deleted_files.txt"):
     try:
-        print("🧹 গিটহাব থেকে ডিলিট হওয়া ফাইলগুলো ডাটাবেজ থেকে ক্লিন করা হচ্ছে...")
+        print("🧹 গিটহাব থেকে ডিলিট হওয়া ফাইলগুলো পাইনকোন ডাটাবেজ থেকে ক্লিন করা হচ্ছে...")
         with open("deleted_files.txt", "r", encoding="utf-8") as df:
             for line in df:
                 deleted_file = line.strip()
+                # ফাইলটি বর্তমানে অ্যাক্টিভ সোর্সে না থাকলে পাইনকোন থেকে রিমুভ করা হবে
                 if deleted_file and deleted_file not in current_active_sources:
                     print(f"🗑️ Deleting from Pinecone: {deleted_file}")
-                    # মেটাডেটা ফিল্টার ব্যবহার করে ডিলিট করা
+                    # মেটাডেটা ফিল্টার ব্যবহার করে ডিলিট রিকোয়েস্ট সফল করা হলো
                     index.delete(filter={"source": {"$eq": deleted_file}})
-        print("✅ ডিলিট হওয়া ফাইলের ডাটাবেজ ক্লিনিং সম্পন্ন হয়েছে।")
+        print("✅ ডিলিট হওয়া ফাইলের ডাটাবেজ ক্লিনিং সফলভাবে সম্পন্ন হয়েছে।")
     except Exception as e:
-        print(f"⚠️ ডাটাবেজ সিঙ্ক সতর্কতা: {e}")
+        print(f"⚠️ ডাটাবেজ সিঙ্ক সতর্কতা/ত্রুটি: {e}")
 
 # ================= LOAD LOCAL FILES =================
 docs = []
@@ -114,7 +113,7 @@ if os.path.exists("bitac_files"):
                                 
                                 page_count += 1
                                 if page_count > 50: 
-                                    print(f"⚠️ {path} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
+                                    print(f"⚠️ {path} এর প্রথম ৫০ পেজ নেওয়া হয়েছে (সেফটি লিমিট)")
                                     break
                     except Exception as e:
                         print(f"❌ PDF table parsing error ({path}):", e)
@@ -227,20 +226,20 @@ else:
                 
                 index.upsert(vectors=pinecone_upserts)
                 total_uploaded += len(pinecone_upserts)
-                print(f"✅ Batch {current_batch} সফলভাবে Pinecone-এ আপলোড হয়েছে।")
+                print(f"✅ Batch {current_batch} সফলভাবে Pinecone-এ আপলোড হয়েছে।")
                 
-                time.sleep(2) # সার্ভার এক রিজিয়নে হওয়ায় ডিলে ৩ সেকেন্ড থেকে কমিয়ে ২ সেকেন্ড করা হলো (ফাস্ট প্রসেসিং)
+                time.sleep(2) 
                 break 
                 
             except TooManyRequestsError:
-                print("\n⚠️ Cohere ফ্রি টোকেন লিমিট পার হয়ে গেছে!")
+                print("\n⚠️ Cohere ফ্রি টোকেন লিমিট পার হয়ে গেছে!")
                 print("⏳ ৬০ সেকেন্ড অপেক্ষা করছি...")
                 time.sleep(60)
                 print("🔄 আবার চেষ্টা করা হচ্ছে...\n")
                 
             except Exception as e:
-                print(f"❌ unexpected error: {e}")
+                print(f"❌ Unexpected error: {e}")
                 raise e
 
-    print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! নতুন যুক্ত হওয়া মোট ভেক্টর: {total_uploaded}")
+    print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! নতুন যুক্ত হওয়া মোট ভেক্টর: {total_uploaded}")
     print("🎯 Pinecone ডাটাবেজ এবং গিটহাব ফোল্ডার এখন সম্পূর্ণ সিঙ্কড ও আপ-টু-ডেট!")

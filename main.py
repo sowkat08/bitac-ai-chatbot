@@ -87,35 +87,52 @@ class ChatRequest(BaseModel):
     message: str
     history: list = []
 
-# ================= ৭. স্মার্ট রেসপন্স জেনারেটর (Query Optimizer + Streaming) =================
+# ================= ৭. বুদ্ধিমান ও ফাস্ট রেসপন্স জেনারেটর (ক্র্যাশ-প্রুফ ভার্সন) =================
 async def response_generator(query: str, chat_history: list):
     try:
         optimized_query = query
         history_context = ""
         
-        if chat_history:
-            history_context = "\\n".join([f"{type(m).__name__}: {m.content}" for m in chat_history[-2:]])
+        # অত্যন্ত সেফ পদ্ধতিতে চ্যাট হিস্ট্রি থেকে টেক্সট এক্সট্রাক্ট করা
+        if chat_history and len(chat_history) > 0:
+            try:
+                extracted_messages = []
+                for m in chat_history[-2:]:
+                    role = "User" if "HumanMessage" in str(type(m)) else "AI"
+                    # ডিরেক্ট content অবজেক্ট বা স্ট্রিং চেক
+                    content_text = getattr(m, "content", str(m))
+                    extracted_messages.append(f"{role}: {content_text}")
+                
+                history_context = "\\n".join(extracted_messages)
+            except Exception as history_err:
+                print(f"⚠️ History Parsing Warning: {history_err}")
+                history_context = "" # কোনো এরর হলে হিস্ট্রি স্কিপ করবে, কিন্তু সার্ভার ক্র্যাশ করবে না
         
-        # ⚡ [ইউনিভার্সাল অপ্টিমাইজার]: ১ শব্দ বা সংক্ষিপ্ত প্রশ্নকে ডকের ভেতরের বড় বাক্যে কনভার্ট করবে (সব বিষয়ের জন্য)
-        optimization_prompt = f"""
-        Task: Convert the user's short, informal, or single-word question into 2-3 formal Bangla search keywords/phrases to find the exact matching documents from a BITAC vector database.
-        
-        Rules:
-        1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যতা", "hostel", "sepa"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "হোস্টেল আবাসন সুবিধা").
-        2. Combine the current question with the recent chat history to make the query precise.
-        3. Do not assume anything outside BITAC's context.
-        
-        Chat History:
-        {history_context}
-        
-        Current User Question: {query}
-        
-        Instructions: Output ONLY the expanded Bangla search phrases. Do not write any English, explanations, or punctuation.
-        """
-        
-        opt_response = await llm.ainvoke(optimization_prompt)
-        optimized_query = opt_response.content.strip()
-        print(f"🔍 Optimized Search Query: {optimized_query}")
+        # যদি হিস্ট্রি থাকে, তবেই কুয়েরি অপ্টিমাইজ করা হবে
+        if history_context.strip():
+            optimization_prompt = f"""
+            Task: Convert the user's short, informal, or single-word question into 2-3 formal Bangla search keywords/phrases to find the exact matching documents from a BITAC vector database.
+            
+            Rules:
+            1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যতা", "hostel", "sepa", "advance course"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "উন্নত প্রযুক্তির কোর্সসমূহ").
+            2. Combine the current question with the recent chat history to make the query precise.
+            3. Do not assume anything outside BITAC's context.
+            
+            Chat History:
+            {history_context}
+            
+            Current User Question: {query}
+            
+            Instructions: Output ONLY the expanded Bangla search phrases. Do not write any English, explanations, or punctuation.
+            """
+            try:
+                opt_response = await llm.ainvoke(optimization_prompt)
+                if opt_response and opt_response.content:
+                    optimized_query = opt_response.content.strip()
+                    print(f"🔍 Optimized Search Query: {optimized_query}")
+            except Exception as opt_err:
+                print(f"⚠️ Query Optimization failed, using original query. Error: {opt_err}")
+                optimized_query = query
         
         # লেভেল ১ সার্চ: অপ্টিমাইজড কুয়েরি দিয়ে খোঁজা
         docs = await asyncio.to_thread(retriever.get_relevant_documents, optimized_query)
@@ -124,9 +141,9 @@ async def response_generator(query: str, chat_history: list):
         if not docs:
             docs = await asyncio.to_thread(retriever.get_relevant_documents, query)
 
-        # লেভেল ৩ সার্চ (Fallback 2): ১ শব্দের ক্ষেত্রে নিরাপদ ব্যাকআপ
-        if not docs and len(query.split()) == 1:
-            docs = await asyncio.to_thread(retriever.get_relevant_documents, f"{query} বিটাক")
+        # লেভেল ৩ সার্চ (Fallback 2): ১ শব্দের বা ছোট প্রশ্নের ক্ষেত্রে নিরাপদ ব্যাকআপ
+        if not docs and len(query.split()) <= 3:
+            docs = await asyncio.to_thread(retriever.get_relevant_documents, f"{query} বিটাক কোর্স")
 
         # ক্লায়েন্ট ব্রাউজারে ডাটা স্ট্রিমিং শুরু
         async for event in doc_chain.astream({
@@ -136,8 +153,12 @@ async def response_generator(query: str, chat_history: list):
         }):
             if event:
                 yield event
+                
     except Exception as e:
-        yield f"ত্রুটি ঘটেছে: {str(e)}"
+        import traceback
+        print("❌ CRITICAL ERROR IN GENERATOR:")
+        print(traceback.format_exc())
+        yield f"দুঃখিত, অভ্যন্তরীণ ত্রুটি ঘটেছে: {str(e)}"
 
 # ================= ৮. চ্যাট এপিআই এন্ডপয়েন্ট =================
 @app.post("/chat")

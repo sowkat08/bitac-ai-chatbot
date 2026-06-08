@@ -286,7 +286,7 @@ async function send() {
 
     let typingDiv = document.createElement("div");
     typingDiv.className = "msg bot";
-    typingDiv.innerHTML = "<i>বট ভাবছে...</i>";
+    typingDiv.innerHTML = "<i>...</i>";
     messages.appendChild(typingDiv);
     messages.scrollTop = messages.scrollHeight;
 

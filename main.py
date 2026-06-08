@@ -45,13 +45,13 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# ⚡ [স্পীড বুস্ট]: MMR এর ল্যাগ বাদ দিয়ে similarity সার্চ এবং k=5 করা হয়েছে সঠিক উত্তরের জন্য
+# [স্পীড বুস্ট]: similarity সার্চ এবং k=5 করা হয়েছে সঠিক উত্তরের জন্য
 retriever = vectorstore.as_retriever(
     search_type="similarity",
     search_kwargs={"k": 5}
 )
 
-# ================= ৪. লার্জ ল্যাঙ্গুয়েজ মডেল (LLM) =================
+# ================= ৪. লার্জ ল্যাঙ্গুয়েজ链 (LLM) =================
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
@@ -87,7 +87,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list = []
 
-# ================= ৭. বুদ্ধিমান ও ফাস্ট রেসপন্স জেনারেটর (ক্র্যাশ-প্রুফ ভার্সন) =================
+# ================= ७. স্মার্ট রেসপন্স জেনারেটর (Query Optimizer + Streaming) =================
 async def response_generator(query: str, chat_history: list):
     try:
         optimized_query = query
@@ -99,14 +99,13 @@ async def response_generator(query: str, chat_history: list):
                 extracted_messages = []
                 for m in chat_history[-2:]:
                     role = "User" if "HumanMessage" in str(type(m)) else "AI"
-                    # ডিরেক্ট content অবজেক্ট বা স্ট্রিং চেক
                     content_text = getattr(m, "content", str(m))
                     extracted_messages.append(f"{role}: {content_text}")
                 
                 history_context = "\\n".join(extracted_messages)
             except Exception as history_err:
                 print(f"⚠️ History Parsing Warning: {history_err}")
-                history_context = "" # কোনো এরর হলে হিস্ট্রি স্কিপ করবে, কিন্তু সার্ভার ক্র্যাশ করবে না
+                history_context = ""
         
         # যদি হিস্ট্রি থাকে, তবেই কুয়েরি অপ্টিমাইজ করা হবে
         if history_context.strip():
@@ -114,7 +113,7 @@ async def response_generator(query: str, chat_history: list):
             Task: Convert the user's short, informal, or single-word question into 2-3 formal Bangla search keywords/phrases to find the exact matching documents from a BITAC vector database.
             
             Rules:
-            1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যতা", "hostel", "sepa", "advance course"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "উন্নত প্রযুক্তির কোর্সসমূহ").
+            1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যta", "hostel", "sepa", "advance course"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "উন্নত প্রযুক্তির কোর্সসমূহ").
             2. Combine the current question with the recent chat history to make the query precise.
             3. Do not assume anything outside BITAC's context.
             
@@ -134,16 +133,16 @@ async def response_generator(query: str, chat_history: list):
                 print(f"⚠️ Query Optimization failed, using original query. Error: {opt_err}")
                 optimized_query = query
         
-        # লেভেল ১ সার্চ: অপ্টিমাইজড কুয়েরি দিয়ে খোঁজা
-        docs = await asyncio.to_thread(retriever.get_relevant_documents, optimized_query)
+        # ⚡ [ফিক্সড ও আপডেটেড]: ল্যাংচেইনের নতুন নিয়ম অনুযায়ী .get_relevant_documents এর বদলে .invoke করা হয়েছে
+        docs = await asyncio.to_thread(retriever.invoke, optimized_query)
         
         # লেভেল ২ সার্চ (Fallback): যদি ডেটা না পায়, মূল প্রশ্ন দিয়ে খোঁজা
         if not docs:
-            docs = await asyncio.to_thread(retriever.get_relevant_documents, query)
+            docs = await asyncio.to_thread(retriever.invoke, query)
 
         # লেভেল ৩ সার্চ (Fallback 2): ১ শব্দের বা ছোট প্রশ্নের ক্ষেত্রে নিরাপদ ব্যাকআপ
         if not docs and len(query.split()) <= 3:
-            docs = await asyncio.to_thread(retriever.get_relevant_documents, f"{query} বিটাক কোর্স")
+            docs = await asyncio.to_thread(retriever.invoke, f"{query} বিটাক কোর্স")
 
         # ক্লায়েন্ট ব্রাউজারে ডাটা স্ট্রিমিং শুরু
         async for event in doc_chain.astream({

@@ -1,5 +1,6 @@
 import os
 import asyncio
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,6 @@ from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 from langchain_cohere import CohereEmbeddings, ChatCohere
 
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -19,11 +19,12 @@ app = FastAPI(title="BITAC AI Smart Chatbot")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ================= ২. এনভায়রনমেন্ট ভেরিয়েবল =================
+# ================= ২. এনভায়রনমেন্ট ভেরিয়েবল =================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
@@ -45,119 +46,84 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# [স্পীড বুস্ট]: similarity সার্চ এবং k=5 করা হয়েছে সঠিক উত্তরের জন্য
 retriever = vectorstore.as_retriever(
     search_type="similarity",
-    search_kwargs={"k": 5}
+    search_kwargs={"k": 4} # k=4 ফাস্ট এবং নিখুঁত কনটেক্সটের জন্য পারফেক্ট
 )
 
-# ================= ৪. লার্জ ল্যাঙ্গুয়েজ链 (LLM) =================
+# ================= ৪. লার্জ ল্যাঙ্গুয়েজ মডেল (LLM) =================
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.0,
+    temperature=0.1,
     streaming=True
 )
 
-# ================= ৫. মূল সিস্টেম প্রম্পট (বাংলায় নিখুঁত গাইডলাইন) =================
-system_prompt = """
-তুমি হলে BITAC (বিটাক)-এর অফিসিয়াল এআই অ্যাসিস্ট্যান্ট। 
+# ================= ৫. প্রম্পট সেটআপ =================
+system_prompt = """তুমি হলে BITAC (বিটাক)-এর অফিসিয়াল এআই অ্যাসিস্ট্যান্ট। 
 
-নিয়মাবলী (কঠোরভাবে পালনীয়):
-১. নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে ইউজারের প্রশ্নের সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
-২. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
+নিয়মাবলী (কঠোরভাবে পালনীয়):
+১. নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে ইউজারের প্রশ্নের সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
+২. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
 ৩. যদি কোনো তথ্যই বা প্রাসঙ্গিক কোনো লাইন Context-এ না থাকে, তবে বানিয়ে কিছু বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
-৪. ইউজার যদি আঞ্চলিক ভাষায় বা বাংলিশে (Banglish) প্রশ্ন করে, তবে তার মূল উদ্দেশ্য বুঝে Context-এর সাথে মিলিয়ে যুক্তিসঙ্গত উত্তর দাও।
-৫. উত্তর সবসময় স্পষ্ট, সহজ এবং প্রাঞ্জল বাংলায় হতে হবে।
+৪. ইউজার যদি আঞ্চলিক ভাষায় বা বাংলিশে (Banglish) প্রশ্ন করে, তবে তার মূল উদ্দেশ্য বুঝে Context-এর সাথে মিলিয়ে যুক্তিসঙ্গত উত্তর দাও।
+৫. উত্তর সবসময় স্পষ্ট, সহজ এবং প্রাঞ্জল বাংলায় হতে হবে।
 
 Context:
-{context}
-"""
+{context}"""
 
-prompt = ChatPromptTemplate.from_messages([
+prompt_template = ChatPromptTemplate.from_messages([
     ("system", system_prompt),
     MessagesPlaceholder(variable_name="chat_history"), 
     ("human", "{input}")
 ])
-
-doc_chain = create_stuff_documents_chain(llm, prompt)
 
 # ================= ৬. ডাটা মডেল =================
 class ChatRequest(BaseModel):
     message: str
     history: list = []
 
-# ================= ७. স্মার্ট রেসপন্স জেনারেটর (Query Optimizer + Streaming) =================
+# ================= ७. রেসপন্স জেনারেটর (Optimized Speed & Stream) =================
 async def response_generator(query: str, chat_history: list):
     try:
         optimized_query = query
-        history_context = ""
         
-        # অত্যন্ত সেফ পদ্ধতিতে চ্যাট হিস্ট্রি থেকে টেক্সট এক্সট্রাক্ট করা
-        if chat_history and len(chat_history) > 0:
+        # ১ শব্দের বা শর্ট কুয়েরির জন্য স্মার্ট অপ্টিমাইজেশন (Fast Exec)
+        if len(chat_history) > 0 and len(query.split()) <= 3:
+            last_msg = chat_history[-1].content if hasattr(chat_history[-1], 'content') else str(chat_history[-1])
+            optimization_prompt = f"Task: Combine last response and current short query to make 2-3 Bangla search keywords.\nLast AI Response: {last_msg}\nUser Short Query: {query}\nKeywords only:"
             try:
-                extracted_messages = []
-                for m in chat_history[-2:]:
-                    role = "User" if "HumanMessage" in str(type(m)) else "AI"
-                    content_text = getattr(m, "content", str(m))
-                    extracted_messages.append(f"{role}: {content_text}")
-                
-                history_context = "\\n".join(extracted_messages)
-            except Exception as history_err:
-                print(f"⚠️ History Parsing Warning: {history_err}")
-                history_context = ""
-        
-        # যদি হিস্ট্রি থাকে, তবেই কুয়েরি অপ্টিমাইজ করা হবে
-        if history_context.strip():
-            optimization_prompt = f"""
-            Task: Convert the user's short, informal, or single-word question into 2-3 formal Bangla search keywords/phrases to find the exact matching documents from a BITAC vector database.
-            
-            Rules:
-            1. If the user provides a short keyword (e.g., "asset", "ফি", "যোগ্যta", "hostel", "sepa", "advance course"), expand it to its full official meaning contextually related to BITAC (e.g., "ASSET প্রকল্পের আওতাধীন প্রশিক্ষণের ট্রেডসমূহ", "বিটাক কোর্সের ফি", "ভর্তির যোগ্যতা", "উন্নত প্রযুক্তির কোর্সসমূহ").
-            2. Combine the current question with the recent chat history to make the query precise.
-            3. Do not assume anything outside BITAC's context.
-            
-            Chat History:
-            {history_context}
-            
-            Current User Question: {query}
-            
-            Instructions: Output ONLY the expanded Bangla search phrases. Do not write any English, explanations, or punctuation.
-            """
-            try:
+                # খুব দ্রুত রেসপন্সের জন্য ১ সেকেন্ড টাইমআউট বা শর্ট কল
                 opt_response = await llm.ainvoke(optimization_prompt)
                 if opt_response and opt_response.content:
                     optimized_query = opt_response.content.strip()
-                    print(f"🔍 Optimized Search Query: {optimized_query}")
-            except Exception as opt_err:
-                print(f"⚠️ Query Optimization failed, using original query. Error: {opt_err}")
+            except Exception:
                 optimized_query = query
-        
-        # ⚡ [ফিক্সড ও আপডেটেড]: ল্যাংচেইনের নতুন নিয়ম অনুযায়ী .get_relevant_documents এর বদলে .invoke করা হয়েছে
+
+        # পাইনকোন থেকে কনটেক্সট রিট্রিভ (Async Threading)
         docs = await asyncio.to_thread(retriever.invoke, optimized_query)
         
-        # লেভেল ২ সার্চ (Fallback): যদি ডেটা না পায়, মূল প্রশ্ন দিয়ে খোঁজা
         if not docs:
             docs = await asyncio.to_thread(retriever.invoke, query)
+            
+        context_str = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context available."
 
-        # লেভেল ৩ সার্চ (Fallback 2): ১ শব্দের বা ছোট প্রশ্নের ক্ষেত্রে নিরাপদ ব্যাকআপ
-        if not docs and len(query.split()) <= 3:
-            docs = await asyncio.to_thread(retriever.invoke, f"{query} বিটাক কোর্স")
+        # প্রম্পট ফরম্যাট করা
+        messages = prompt_template.format_messages(
+            context=context_str,
+            chat_history=chat_history,
+            input=query
+        )
 
-        # ক্লায়েন্ট ব্রাউজারে ডাটা স্ট্রিমিং শুরু
-        async for event in doc_chain.astream({
-            "input": query,
-            "chat_history": chat_history,
-            "context": docs
-        }):
-            if event:
-                yield event
-                
+        # ⚡ [স্পীড বুস্ট ফিক্স]: সরাসরি LLM স্ট্রিম ব্যবহার করা হয়েছে যাতে কোনো চঙ্ক মিস না হয়
+        async for chunk in llm.astream(messages):
+            if chunk.content:
+                yield chunk.content
+
     except Exception as e:
-        import traceback
         print("❌ CRITICAL ERROR IN GENERATOR:")
-        print(traceback.format_exc())
-        yield f"দুঃখিত, অভ্যন্তরীণ ত্রুটি ঘটেছে: {str(e)}"
+        traceback.print_exc()
+        yield f"\nদুঃখিত, অভ্যন্তরীণ একটি ত্রুটি ঘটেছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
 
 # ================= ৮. চ্যাট এপিআই এন্ডপয়েন্ট =================
 @app.post("/chat")
@@ -168,7 +134,8 @@ async def chat(req: ChatRequest):
     print(f"💬 Incoming Question: {req.message}")
     
     chat_history = []
-    for msg in req.history:
+    # শেষ ৪টি মেসেজ হিস্ট্রি হিসেবে নেওয়া হচ্ছে (মেমোরি ঠিক রাখার জন্য যথেষ্ট)
+    for msg in req.history[-4:]:
         if msg.get("type") == "user":
             chat_history.append(HumanMessage(content=msg.get("text")))
         elif msg.get("type") == "bot":
@@ -176,7 +143,7 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-# ================= ৯. ইউজার ইন্টারফেস (UI with Live Streaming View) =================
+# ================= ৯. ইউজার ইন্টারফেস =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -184,17 +151,18 @@ def home():
 <html>
 <head>
     <title>BITAC AI Chatbot</title>
+    <meta charset="utf-8">
     <style>
-        body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .chatbox { width: 420px; height: 650px; background: white; border-radius: 15px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-        .header { background: #1e3a8a; color: white; padding: 15px; text-align: center; font-weight: bold; }
-        .messages { flex: 1; padding: 10px; overflow-y: auto; background: #f1f5f9; }
-        .msg { margin: 8px 0; padding: 10px; border-radius: 10px; max-width: 80%; white-space: pre-wrap; font-size: 14px; line-height: 1.4; }
-        .user { background: #2563eb; color: white; margin-left: auto; }
-        .bot { background: #e5e7eb; color: #1e293b; margin-right: auto; }
-        .input-box { display: flex; border-top: 1px solid #ddd; }
-        input { flex: 1; padding: 12px; border: none; outline: none; }
-        button { padding: 12px 15px; border: none; background: #2563eb; color: white; cursor: pointer; font-weight: bold; }
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .chatbox { width: 450px; height: 650px; background: white; border-radius: 15px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .header { background: #1e3a8a; color: white; padding: 15px; text-align: center; font-weight: bold; font-size: 16px; }
+        .messages { flex: 1; padding: 15px; overflow-y: auto; background: #f8fafc; }
+        .msg { margin: 10px 0; padding: 12px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
+        .user { background: #2563eb; color: white; margin-left: auto; border-bottom-right-radius: 2px; }
+        .bot { background: #e2e8f0; color: #1e293b; margin-right: auto; border-bottom-left-radius: 2px; }
+        .input-box { display: flex; border-top: 1px solid #e2e8f0; background: #fff; }
+        input { flex: 1; padding: 15px; border: none; outline: none; font-size: 14px; }
+        button { padding: 0 20px; border: none; background: #2563eb; color: white; cursor: pointer; font-weight: bold; font-size: 14px; }
         button:hover { background: #1d4ed8; }
     </style>
 </head>
@@ -204,7 +172,7 @@ def home():
     <div class="header">BITAC AI Smart Chatbot 🚀</div>
     <div class="messages" id="messages"></div>
     <div class="input-box">
-        <input id="input" placeholder="Ask something..." onkeypress="handleKeyPress(event)" />
+        <input id="input" placeholder="এখানে বাংলায় বা English-এ প্রশ্ন লিখুন..." onkeypress="handleKeyPress(event)" autocomplete="off" />
         <button onclick="send()">Send</button>
     </div>
 </div>
@@ -235,7 +203,7 @@ async function send() {
     addMessage(text, "user");
     input.value = "";
 
-    let botMessageDiv = addMessage("", "bot");
+    let botMessageDiv = addMessage("✍️ টাইপ করছে...", "bot");
     
     try {
         let res = await fetch("/chat", {
@@ -250,6 +218,7 @@ async function send() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let fullAnswer = "";
+        botMessageDiv.innerText = ""; // Clear loader text
 
         while (true) {
             const { value, done } = await reader.read();
@@ -265,12 +234,11 @@ async function send() {
             chatHistory.push({type: "user", text: text});
             chatHistory.push({type: "bot", text: fullAnswer.trim()});
             
-            if (chatHistory.length > 10) {
-                chatHistory.shift();
-                chatHistory.shift();
+            if (chatHistory.length > 8) {
+                chatHistory.splice(0, 2); // মেমোরি ক্লিন রাখা
             }
         } else {
-            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
+            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
         }
     } catch (error) {
         botMessageDiv.innerText = "সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।";

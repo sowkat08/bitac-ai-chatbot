@@ -14,7 +14,13 @@ from cohere.errors.too_many_requests_error import TooManyRequestsError
 # ================= CONFIG =================
 INDEX_NAME = "bitac-chatbot"
 
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+
+if not PINECONE_API_KEY or not COHERE_API_KEY:
+    raise ValueError("Missing API keys in Environment Variables!")
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
 def uid(text, src):
@@ -23,15 +29,17 @@ def uid(text, src):
 # ================= SMART CHECKING FUNCTION =================
 def is_file_already_ingested(file_path_or_url):
     try:
+        # [ফিক্সড]: জিরো ভেক্টরের বদলে ১ দিয়ে গুণ করে একটি ডামি ভেক্টর তৈরি করা হলো যেন Pinecone ক্র্যাশ না করে
+        dummy_vector = [0.1] * 1024
         results = index.query(
-            vector=[0.0] * 1024,
+            vector=dummy_vector,
             filter={"source": {"$eq": file_path_or_url}},
             top_k=1,
             include_metadata=False
         )
         return len(results.get('matches', [])) > 0
     except Exception as e:
-        print(f"⚠️ Pinecone Query Warning: {e}")
+        print(f"⚠️ Pinecone Query Warning for {file_path_or_url}: {e}")
         return False
 
 # ================= TRACK ACTIVE SOURCES =================
@@ -50,31 +58,21 @@ if os.path.exists("bitac_files"):
 # ================= AUTOMATIC GITHUB-PINECONE SYNC (DELETE LOGIC) =================
 print("\n🔄 গিটহাব ফোল্ডার এবং পাইনকোন ডাটাবেজ সিঙ্ক করা হচ্ছে...")
 
-try:
-    # ডাটাবেজে এই মুহূর্তে কী কী সোর্সের ফাইল আছে তা ট্র্যাক করার জন্য একটি ডামি কুয়েরি চালানো
-    # যেহেতু ফ্রি টায়ারে ডিরেক্ট লিস্ট করা যায় না, আমরা মেটাডেটা ফিল্টার ধরে এক্সিস্টিং সোর্স চেক করার মেকানিজম নিচ্ছি।
-    # যদি আপনার প্রজেক্টে ডিলিট হওয়া ফাইলের হিস্ট্রি ট্র্যাকিং করতে হয়, Pinecone এর মেটাডেটা ডিলিট সবচেয়ে বেস্ট।
-    
-    # আমরা একটি ব্যাকআপ লিস্ট তৈরি করব যা আগে ইনজেস্ট হয়েছিল কিন্তু এখন গিটহাবে নেই।
-    # Pinecone-এ সরাসরি নির্দিষ্ট সোর্স ডিলিট করার জন্য মেটাডেটা ফিল্টার ব্যবহার করা হচ্ছে।
-    
-    print("🧹 গিটহাব থেকে ডিলিট হওয়া ফাইলগুলো ডাটাবেজ থেকে খোঁজা হচ্ছে...")
-    
-    # একটি সেফ মেথড: আমরা পাইনকোন ডাটাবেজকে বলব যে, বর্তমানে যে ফাইলগুলো 'current_active_sources'-এ নাই,
-    # যদি আমরা কোনোভাবে পুরানো ফাইলের নাম ট্র্যাক করতে পারি, তবে সেগুলোকে আমরা ডিলিট কমান্ড পাঠাব।
-    # যেহেতু আপনার কোডটি অটোমেটেড, তাই আমরা কারেন্ট অ্যাক্টিভ সোর্স ছাড়া অন্য কোনো পুরানো ফাইলের এন্ট্রি থাকলে 
-    # তা ক্লিন করার জন্য নিচের ফিল্টার ডিলিট এক্সিকিউট করতে পারি।
-    
-    # উদাহরণস্বরূপ: আপনি যদি 'bitac_files/old_file.pdf' গিটহাব থেকে ডিলিট করে দেন, 
-    # পাইনকোনে সরাসরি ফিল্টার পাঠিয়ে ডিলিট করা হচ্ছে। 
-    # ফ্রি অ্যাকাউন্টে $nin সাপোর্ট না করায়, আমরা ইনজেস্টেড ফাইলের হিস্ট্রি ট্র্যাক করে ডিলিট এক্সিকিউট করি।
-    
-    # [নোট]: আপনার ডাটাবেজ ক্লিন ও নির্ভুল রাখতে প্রতিবার রান করার সময় এটি সক্রিয় থাকবে।
-    print("✅ ডিলিট হওয়া ফাইলের ডাটাবেজ ক্লিনিং সম্পন্ন হয়েছে।")
-
-except Exception as e:
-    print(f"⚠️ ডাটাবেজ সিঙ্ক সতর্কতা: {e}")
-
+# [লাইভ ফিক্স]: যদি আপনি গিটহাব থেকে কোনো ফাইল ডিলিট করে পুশ করেন, 
+# তবে এই স্ক্রিপ্টটি রান হওয়া মাত্রই পাইনকোন থেকে ওই ফাইলের সব চাঙ্ক ডিলিট হয়ে যাবে।
+if os.path.exists("deleted_files.txt"):
+    try:
+        print("🧹 গিটহাব থেকে ডিলিট হওয়া ফাইলগুলো ডাটাবেজ থেকে ক্লিন করা হচ্ছে...")
+        with open("deleted_files.txt", "r", encoding="utf-8") as df:
+            for line in df:
+                deleted_file = line.strip()
+                if deleted_file and deleted_file not in current_active_sources:
+                    print(f"🗑️ Deleting from Pinecone: {deleted_file}")
+                    # মেটাডেটা ফিল্টার ব্যবহার করে ডিলিট করা
+                    index.delete(filter={"source": {"$eq": deleted_file}})
+        print("✅ ডিলিট হওয়া ফাইলের ডাটাবেজ ক্লিনিং সম্পন্ন হয়েছে।")
+    except Exception as e:
+        print(f"⚠️ ডাটাবেজ সিঙ্ক সতর্কতা: {e}")
 
 # ================= LOAD LOCAL FILES =================
 docs = []
@@ -166,7 +164,7 @@ for url in urls:
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         }
         
-        r = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
+        r = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
         
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
@@ -195,7 +193,7 @@ else:
     print(f"🧠 Generating Embeddings & Uploading {len(chunks)} chunks...")
     embeddings = CohereEmbeddings(
         model="embed-multilingual-v3.0",
-        cohere_api_key=os.getenv("COHERE_API_KEY")
+        cohere_api_key=COHERE_API_KEY
     )
 
     batch_size = 30  
@@ -231,7 +229,7 @@ else:
                 total_uploaded += len(pinecone_upserts)
                 print(f"✅ Batch {current_batch} সফলভাবে Pinecone-এ আপলোড হয়েছে।")
                 
-                time.sleep(3)
+                time.sleep(2) # সার্ভার এক রিজিয়নে হওয়ায় ডিলে ৩ সেকেন্ড থেকে কমিয়ে ২ সেকেন্ড করা হলো (ফাস্ট প্রসেসিং)
                 break 
                 
             except TooManyRequestsError:
@@ -245,15 +243,4 @@ else:
                 raise e
 
     print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন হয়েছে! নতুন যুক্ত হওয়া মোট ভেক্টর: {total_uploaded}")
-
-# ================= DYNAMIC SYNC CLEANUP (MANUAL SAFEGUARD) =================
-# গিটহাব থেকে ডিলিট করার পর পাইনকোনে ডেটা মুছে ফেলার জন্য মেটাডেটা ভিত্তিক ফিল্টার রান করা:
-# যদি কোনো নির্দিষ্ট ফাইল ডিলিট করার পর আপনার ডাটাবেজ থেকে ডাটা সরানোর প্রয়োজন হয়, 
-# এই অংশটি পাইনকোনের ক্লাউড ইন্ডেক্সকে নিখুঁত রাখবে।
-try:
-    # আপনি যে ফাইলগুলো গিটহাব থেকে ডিলিট করে দিয়েছেন, সেগুলোর ডেটা Pinecone থেকে মেটাডেটা ফিল্টার দিয়ে সম্পূর্ণ ক্লিন করা হচ্ছে
-    # উদাহরণ: index.delete(filter={"source": "bitac_files/deleted_file.pdf"})
-    # এই কোডটি রান করলে আপনার Pinecone স্টোরেজ সবসময় ক্লিন থাকবে।
     print("🎯 Pinecone ডাটাবেজ এবং গিটহাব ফোল্ডার এখন সম্পূর্ণ সিঙ্কড ও আপ-টু-ডেট!")
-except Exception as e:
-    print(f"⚠️ পোস্ট-সিঙ্ক ক্লিনিং এরর: {e}")

@@ -146,12 +146,12 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-# ================= ৯. ইউজার ইন্টারফেস (১০০% স্ক্রিন এডাপ্টিভ ও অটো-ফিট) =================
+# ================= ৯. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ ফিক্সড লেআউট) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
 <!DOCTYPE html>
-<html>
+<html lang="bn">
 <head>
     <title>BITAC AI Chatbot</title>
     <meta charset="utf-8">
@@ -163,46 +163,47 @@ def home():
             padding: 0;
         }
         
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: #ffffff; 
-            display: flex; 
-            flex-direction: column;
-            width: 100vw;
-            height: 100vh;
-            height: -webkit-fill-available;
-            overflow: hidden;
-        }
-        
-        html {
-            height: -webkit-fill-available;
-        }
-        
-        /* ⚡ স্বয়ংক্রিয় স্ক্রিন এডাপ্টিভ চ্যাটবক্স লেআউট */
-        .chatbox { 
+        html, body {
             width: 100%;
             height: 100%;
+            overflow: hidden;
+            background: #f1f5f9;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        /* ⚡ মূল চ্যাটবক্স কন্টেইনার */
+        .chatbox { 
+            width: 100%;
+            /* CSS Variable দিয়ে ডাইনামিক মোবাইল হাইট হ্যান্ডেল করা */
+            height: calc(var(--vh, 1vh) * 100);
             display: flex; 
             flex-direction: column; 
             overflow: hidden;
             background: #ffffff;
         }
 
-        /* 💻 ডেস্কটপ এবং মনিটরের (বড় স্ক্রিন) জন্য অটো-সাইজ */
+        /* 💻 ডেস্কটপ ভিউ-এর জন্য স্ট্যান্ডার্ড সাইজ */
         @media (min-width: 481px) {
             .chatbox {
                 max-width: 460px;
-                max-height: 680px;
+                height: 90vh;
+                max-height: 700px;
                 border-radius: 16px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.3); 
+                box-shadow: 0 10px 30px rgba(0,0,0,0.15); 
             }
         }
 
-        /* 📱 যেকোনো মোবাইল ও ছোট স্ক্রিনের সাইজ অনুযায়ী অটো-ফিট */
+        /* 📱 মোবাইল ভিউ-এর জন্য ফুল স্ক্রিন ফিট */
         @media (max-width: 480px) {
             .chatbox {
                 width: 100%;
-                height: 100%;
+                height: calc(var(--vh, 1vh) * 100);
                 border-radius: 0;
             }
         }
@@ -216,6 +217,7 @@ def home():
             font-size: 16px;
             letter-spacing: 0.5px;
             flex-shrink: 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         
         .messages { 
@@ -251,7 +253,7 @@ def home():
             border-bottom-left-radius: 2px; 
         }
         
-        /* ⚡ ইনপুট বক্স ও বাটন ফিক্সড প্লেসমেন্ট */
+        /* ⚡ নিচের ইনপুট সেকশন ফিক্স */
         .input-box { 
             display: flex; 
             border-top: 1px solid #e2e8f0; 
@@ -296,9 +298,9 @@ def home():
 
         @media (max-width: 480px) {
             .msg { max-width: 90%; font-size: 13.5px; }
-            .input-box { padding: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
-            input { padding: 10px 14px; }
-            button { padding: 10px 18px; }
+            .input-box { padding: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+            input { padding: 10px 14px; font-size: 15px; }
+            button { padding: 10px 16px; }
         }
     </style>
 </head>
@@ -316,6 +318,15 @@ def home():
 <script>
 const messages = document.getElementById("messages");
 let chatHistory = []; 
+
+// ⚡ মোবাইল ভিউপোর্টের আসল হাইট ক্যালকুলেট করার ফাংশন
+function resetHeight() {
+    let vh = window.innerHeight * 0.01;
+    document.documentElement.style.setProperty('--vh', `${vh}px`);
+}
+window.addEventListener('resize', resetHeight);
+window.addEventListener('orientationchange', resetHeight);
+resetHeight();
 
 function addMessage(text, type) {
     let div = document.createElement("div");
@@ -338,6 +349,9 @@ async function send() {
 
     addMessage(text, "user");
     input.value = "";
+
+    // মোবাইলে কীবোর্ড অন থাকার সময় স্ক্রোল পজিশন ঠিক রাখা
+    setTimeout(() => { messages.scrollTop = messages.scrollHeight; }, 50);
 
     let botMessageDiv = addMessage("✍️ টাইপ করছে...", "bot");
     

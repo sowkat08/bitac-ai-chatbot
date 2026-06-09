@@ -146,7 +146,7 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-# ================= ৯. ইউজার ইন্টারফেস (১০% ডাইনামিক স্ক্রিন এডাপ্টিভ) =================
+# ================= ৯. ইউজার ইন্টারফেস (১০০% স্ক্রিন এডাপ্টিভ ও অটো-ফিট) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -155,7 +155,7 @@ def home():
 <head>
     <title>BITAC AI Chatbot</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <style>
         * { 
             box-sizing: border-box; 
@@ -165,43 +165,45 @@ def home():
         
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: #0f172a; 
+            background: #ffffff; 
             display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            /* সম্পূর্ণ স্ক্রিনের সমান উইডথ ও হাইট */
+            flex-direction: column;
             width: 100vw;
             height: 100vh;
+            height: -webkit-fill-available;
             overflow: hidden;
         }
         
-        /* ⚡ মূল ডাইনামিক চ্যাটবক্স: স্ক্রিন ছোট-বড় হলে এটিও ছোট-বড় হবে */
+        html {
+            height: -webkit-fill-available;
+        }
+        
+        /* ⚡ স্বয়ংক্রিয় স্ক্রিন এডাপ্টিভ চ্যাটবক্স লেআউট */
         .chatbox { 
             width: 100%;
             height: 100%;
-            background: white; 
             display: flex; 
             flex-direction: column; 
-            overflow: hidden; 
-            transition: all 0.2s ease;
+            overflow: hidden;
+            background: #ffffff;
         }
 
-        /* ⚡ ডেস্কটপ এবং ট্যাবলেটের (মাঝারি ও বড় স্ক্রিন) জন্য কাস্টমাইজেশন */
+        /* 💻 ডেস্কটপ এবং মনিটরের (বড় স্ক্রিন) জন্য অটো-সাইজ */
         @media (min-width: 481px) {
             .chatbox {
-                max-width: 460px; /* ডেস্কটপে সর্বোচ্চ চওড়া */
-                max-height: 680px; /* ডেস্কটপে সর্বোচ্চ লম্বা */
+                max-width: 460px;
+                max-height: 680px;
                 border-radius: 16px;
                 box-shadow: 0 10px 30px rgba(0,0,0,0.3); 
             }
         }
 
-        /* ⚡ মোবাইল স্ক্রিনের জন্য (০ থেকে ৪৮০ পিক্সেল) সম্পূর্ণ স্ক্রিনের সমান */
+        /* 📱 যেকোনো মোবাইল ও ছোট স্ক্রিনের সাইজ অনুযায়ী অটো-ফিট */
         @media (max-width: 480px) {
             .chatbox {
-                width: 100vw;
-                height: 100vh;
-                border-radius: 0; /* মোবাইলে কোনো বর্ডার বাঁকা থাকবে না, একদম মিশে যাবে */
+                width: 100%;
+                height: 100%;
+                border-radius: 0;
             }
         }
 
@@ -221,6 +223,7 @@ def home():
             padding: 15px; 
             overflow-y: auto; 
             background: #f8fafc; 
+            -webkit-overflow-scrolling: touch;
         }
         
         .msg { 
@@ -248,13 +251,15 @@ def home():
             border-bottom-left-radius: 2px; 
         }
         
+        /* ⚡ ইনপুট বক্স ও বাটন ফিক্সড প্লেসমেন্ট */
         .input-box { 
             display: flex; 
             border-top: 1px solid #e2e8f0; 
             background: #fff; 
-            padding: 10px;
+            padding: 12px;
             flex-shrink: 0;
             align-items: center;
+            padding-bottom: calc(12px + env(safe-area-inset-bottom));
         }
         
         input { 
@@ -263,7 +268,7 @@ def home():
             border: 1px solid #e2e8f0; 
             border-radius: 24px;
             outline: none; 
-            font-size: 14px; 
+            font-size: 16px; 
             background: #f8fafc;
             transition: all 0.2s;
         }
@@ -284,9 +289,17 @@ def home():
             font-size: 14px; 
             border-radius: 24px;
             transition: background 0.2s;
+            flex-shrink: 0;
         }
         
         button:hover { background: #1d4ed8; }
+
+        @media (max-width: 480px) {
+            .msg { max-width: 90%; font-size: 13.5px; }
+            .input-box { padding: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+            input { padding: 10px 14px; }
+            button { padding: 10px 18px; }
+        }
     </style>
 </head>
 <body>

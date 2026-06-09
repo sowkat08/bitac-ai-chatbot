@@ -13,16 +13,26 @@ from langchain_cohere import CohereEmbeddings, ChatCohere
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-# ================= ১. অ্যাপ সেটআপ ও CORS =================
+# ================= ১. অ্যাপ সেটআপ, CORS ও সিকিউরিটি হেডার্স =================
 app = FastAPI(title="BITAC AI Smart Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://bitac.gov.bd", "https://*.gov.bd", "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'self' https://bitac.gov.bd https://*.gov.bd;"
+    )
+    if "X-Frame-Options" in response.headers:
+        del response.headers["X-Frame-Options"]
+    return response
 
 # ================= ২. এনভায়রনমেন্ট ভেরিয়েবল =================
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -48,7 +58,7 @@ vectorstore = PineconeVectorStore(
 
 retriever = vectorstore.as_retriever(
     search_type="similarity",
-    search_kwargs={"k": 4} # k=4 ফাস্ট এবং নিখুঁত কনটেক্সটের জন্য পারফেক্ট
+    search_kwargs={"k": 4}
 )
 
 # ================= ৪. লার্জ ল্যাঙ্গুয়েজ মডেল (LLM) =================
@@ -83,39 +93,33 @@ class ChatRequest(BaseModel):
     message: str
     history: list = []
 
-# ================= ७. রেসপন্স জেনারেটর (Optimized Speed & Stream) =================
+# ================= ७. রেসপন্স জেনারেটর =================
 async def response_generator(query: str, chat_history: list):
     try:
         optimized_query = query
         
-        # ১ শব্দের বা শর্ট কুয়েরির জন্য স্মার্ট অপ্টিমাইজেশন (Fast Exec)
         if len(chat_history) > 0 and len(query.split()) <= 3:
             last_msg = chat_history[-1].content if hasattr(chat_history[-1], 'content') else str(chat_history[-1])
             optimization_prompt = f"Task: Combine last response and current short query to make 2-3 Bangla search keywords.\nLast AI Response: {last_msg}\nUser Short Query: {query}\nKeywords only:"
             try:
-                # খুব দ্রুত রেসপন্সের জন্য ১ সেকেন্ড টাইমআউট বা শর্ট কল
                 opt_response = await llm.ainvoke(optimization_prompt)
                 if opt_response and opt_response.content:
                     optimized_query = opt_response.content.strip()
             except Exception:
                 optimized_query = query
 
-        # পাইনকোন থেকে কনটেক্সট রিট্রিভ (Async Threading)
         docs = await asyncio.to_thread(retriever.invoke, optimized_query)
-        
         if not docs:
             docs = await asyncio.to_thread(retriever.invoke, query)
             
         context_str = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context available."
 
-        # প্রম্পট ফরম্যাট করা
         messages = prompt_template.format_messages(
             context=context_str,
             chat_history=chat_history,
             input=query
         )
 
-        # ⚡ [স্পীড বুস্ট ফিক্স]: সরাসরি LLM স্ট্রিম ব্যবহার করা হয়েছে যাতে কোনো চঙ্ক মিস না হয়
         async for chunk in llm.astream(messages):
             if chunk.content:
                 yield chunk.content
@@ -134,7 +138,6 @@ async def chat(req: ChatRequest):
     print(f"💬 Incoming Question: {req.message}")
     
     chat_history = []
-    # শেষ ৪টি মেসেজ হিস্ট্রি হিসেবে নেওয়া হচ্ছে (মেমোরি ঠিক রাখার জন্য যথেষ্ট)
     for msg in req.history[-4:]:
         if msg.get("type") == "user":
             chat_history.append(HumanMessage(content=msg.get("text")))
@@ -143,7 +146,7 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-# ================= ৯. ইউজার ইন্টারফেস =================
+# ================= ৯. ইউজার ইন্টারফেস (১০% ডাইনামিক স্ক্রিন এডাপ্টিভ) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -152,17 +155,137 @@ def home():
 <head>
     <title>BITAC AI Chatbot</title>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
-        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .chatbox { width: 450px; height: 650px; background: white; border-radius: 15px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-        .header { background: #1e3a8a; color: white; padding: 15px; text-align: center; font-weight: bold; font-size: 16px; }
-        .messages { flex: 1; padding: 15px; overflow-y: auto; background: #f8fafc; }
-        .msg { margin: 10px 0; padding: 12px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
-        .user { background: #2563eb; color: white; margin-left: auto; border-bottom-right-radius: 2px; }
-        .bot { background: #e2e8f0; color: #1e293b; margin-right: auto; border-bottom-left-radius: 2px; }
-        .input-box { display: flex; border-top: 1px solid #e2e8f0; background: #fff; }
-        input { flex: 1; padding: 15px; border: none; outline: none; font-size: 14px; }
-        button { padding: 0 20px; border: none; background: #2563eb; color: white; cursor: pointer; font-weight: bold; font-size: 14px; }
+        * { 
+            box-sizing: border-box; 
+            margin: 0; 
+            padding: 0;
+        }
+        
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #0f172a; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            /* সম্পূর্ণ স্ক্রিনের সমান উইডথ ও হাইট */
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        /* ⚡ মূল ডাইনামিক চ্যাটবক্স: স্ক্রিন ছোট-বড় হলে এটিও ছোট-বড় হবে */
+        .chatbox { 
+            width: 100%;
+            height: 100%;
+            background: white; 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+            transition: all 0.2s ease;
+        }
+
+        /* ⚡ ডেস্কটপ এবং ট্যাবলেটের (মাঝারি ও বড় স্ক্রিন) জন্য কাস্টমাইজেশন */
+        @media (min-width: 481px) {
+            .chatbox {
+                max-width: 460px; /* ডেস্কটপে সর্বোচ্চ চওড়া */
+                max-height: 680px; /* ডেস্কটপে সর্বোচ্চ লম্বা */
+                border-radius: 16px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.3); 
+            }
+        }
+
+        /* ⚡ মোবাইল স্ক্রিনের জন্য (০ থেকে ৪৮০ পিক্সেল) সম্পূর্ণ স্ক্রিনের সমান */
+        @media (max-width: 480px) {
+            .chatbox {
+                width: 100vw;
+                height: 100vh;
+                border-radius: 0; /* মোবাইলে কোনো বর্ডার বাঁকা থাকবে না, একদম মিশে যাবে */
+            }
+        }
+
+        .header { 
+            background: #1e3a8a; 
+            color: white; 
+            padding: 16px; 
+            text-align: center; 
+            font-weight: bold; 
+            font-size: 16px;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+        
+        .messages { 
+            flex: 1; 
+            padding: 15px; 
+            overflow-y: auto; 
+            background: #f8fafc; 
+        }
+        
+        .msg { 
+            margin: 10px 0; 
+            padding: 12px 16px; 
+            border-radius: 14px; 
+            max-width: 85%; 
+            white-space: pre-wrap; 
+            font-size: 14px; 
+            line-height: 1.5; 
+            word-wrap: break-word; 
+        }
+        
+        .user { 
+            background: #2563eb; 
+            color: white; 
+            margin-left: auto; 
+            border-bottom-right-radius: 2px; 
+        }
+        
+        .bot { 
+            background: #e2e8f0; 
+            color: #1e293b; 
+            margin-right: auto; 
+            border-bottom-left-radius: 2px; 
+        }
+        
+        .input-box { 
+            display: flex; 
+            border-top: 1px solid #e2e8f0; 
+            background: #fff; 
+            padding: 10px;
+            flex-shrink: 0;
+            align-items: center;
+        }
+        
+        input { 
+            flex: 1; 
+            padding: 12px 16px; 
+            border: 1px solid #e2e8f0; 
+            border-radius: 24px;
+            outline: none; 
+            font-size: 14px; 
+            background: #f8fafc;
+            transition: all 0.2s;
+        }
+        
+        input:focus {
+            border-color: #2563eb;
+            background: #fff;
+        }
+        
+        button { 
+            margin-left: 8px;
+            padding: 12px 24px; 
+            border: none; 
+            background: #2563eb; 
+            color: white; 
+            cursor: pointer; 
+            font-weight: bold; 
+            font-size: 14px; 
+            border-radius: 24px;
+            transition: background 0.2s;
+        }
+        
         button:hover { background: #1d4ed8; }
     </style>
 </head>
@@ -172,7 +295,7 @@ def home():
     <div class="header">BITAC AI Smart Chatbot 🚀</div>
     <div class="messages" id="messages"></div>
     <div class="input-box">
-        <input id="input" placeholder="এখানে বাংলায় বা English-এ প্রশ্ন লিখুন..." onkeypress="handleKeyPress(event)" autocomplete="off" />
+        <input id="input" placeholder="এখানে বাংলায় বা English-এ প্রশ্ন লিখুন..." onkeypress="handleKeyPress(event)" autocomplete="off" />
         <button onclick="send()">Send</button>
     </div>
 </div>
@@ -218,7 +341,7 @@ async function send() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let fullAnswer = "";
-        botMessageDiv.innerText = ""; // Clear loader text
+        botMessageDiv.innerText = "";
 
         while (true) {
             const { value, done } = await reader.read();
@@ -235,10 +358,10 @@ async function send() {
             chatHistory.push({type: "bot", text: fullAnswer.trim()});
             
             if (chatHistory.length > 8) {
-                chatHistory.splice(0, 2); // মেমোরি ক্লিন রাখা
+                chatHistory.splice(0, 2);
             }
         } else {
-            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
+            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
         }
     } catch (error) {
         botMessageDiv.innerText = "সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।";

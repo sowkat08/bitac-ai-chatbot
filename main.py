@@ -1,7 +1,8 @@
 import os
 import asyncio
 import traceback
-from fastapi import FastAPI, HTTPException
+import requests  # ⚡ ফেসবুক API-তে রিকোয়েস্ট পাঠানোর জন্য নতুন ইম্পোর্ট
+from fastapi import FastAPI, HTTPException, Request  # ⚡ Request অবজেক্ট নতুন ইম্পোর্ট করা হয়েছে
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -38,6 +39,10 @@ async def add_security_headers(request, call_next):
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
+
+# ⚡ ফেসবুকের সিক্রেট ভেরিয়েবল (এগুলো Render-এর Environment Variables-এ সেট করে দেবেন)
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
+FB_VERIFY_TOKEN = os.getenv("FB_VERIFY_TOKEN", "my_secret_bitac_token") 
 
 if not PINECONE_API_KEY or not COHERE_API_KEY:
     raise ValueError("Missing API keys in Environment Variables!")
@@ -129,13 +134,13 @@ async def response_generator(query: str, chat_history: list):
         traceback.print_exc()
         yield f"\nদুঃখিত, অভ্যন্তরীণ একটি ত্রুটি ঘটেছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
 
-# ================= ৮. চ্যাট এপিআই এন্ডপয়েন্ট =================
+# ================= ৮. চ্যাট এপিআই এন্ডপয়েন্ট (ওয়েবসাইটের জন্য) =================
 @app.post("/chat")
 async def chat(req: ChatRequest):
     if not req.message or not req.message.strip():
         return StreamingResponse((add for add in ["অনুগ্রহ করে কিছু লিখুন।"]), media_type="text/plain")
 
-    print(f"💬 Incoming Question: {req.message}")
+    print(f"💬 Incoming Question From Web: {req.message}")
     
     chat_history = []
     for msg in req.history[-4:]:
@@ -146,7 +151,80 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-# ================= ৯. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ ফিক্সড লেআউট) =================
+
+# ================= ⚡ নতুন সংযোজন: ৯. ফেসবুক ওয়েবহুক ভেরিফিকেশন (GET) =================
+# ফেসবুক প্রথমবার কানেক্ট করার সময় এই এন্ডপয়েন্ট দিয়ে আপনার সার্ভার চেক করবে
+@app.get("/webhook")
+async def verify_fb_webhook(request: Request):
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode and token:
+        if mode == "subscribe" and token == FB_VERIFY_TOKEN:
+            print("✅ Facebook Webhook Verified Successfully!")
+            return HTMLResponse(content=challenge, status_code=200)
+        else:
+            raise HTTPException(status_code=403, detail="Verification token mismatch")
+    return HTMLResponse(content="Missing parameters", status_code=400)
+
+
+# ================= ⚡ নতুন সংযোজন: ১০. ফেসবুক মেসেজ রিসিভ ও রেসপন্স (POST) =================
+# ফেসবুকে কেউ মেসেজ দিলে এই এন্ডপয়েন্টে ডেটা আসবে
+@app.post("/webhook")
+async def fb_webhook(request: Request):
+    body = await request.json()
+    
+    if body.get("object") == "page":
+        for entry in body.get("entry", []):
+            for messaging_event in entry.get("messaging", []):
+                # কেউ মেসেজ পাঠালে এবং সেটি বটের নিজের পাঠানো ফিরতি মেসেজ (Echo) না হলে
+                if messaging_event.get("message") and not messaging_event["message"].get("is_echo"):
+                    sender_id = messaging_event["sender"]["id"]
+                    user_text = messaging_event["message"].get("text")
+                    
+                    if user_text:
+                        print(f"💬 Facebook Message from {sender_id}: {user_text}")
+                        # ফেসবুককে দ্রুত '200 OK' দেওয়ার জন্য ব্যাকগ্রাউন্ডে প্রসেস করা হচ্ছে
+                        asyncio.create_task(process_and_reply_fb(sender_id, user_text))
+                        
+        return HTMLResponse(content="EVENT_RECEIVED", status_code=200)
+    else:
+        raise HTTPException(status_code=404)
+
+# ================= ⚡ নতুন সংযোজন: ১১. ফেসবুক মেসেজ প্রসেসিং ও সেন্ড ফাংশন =================
+async def process_and_reply_fb(sender_id: str, user_text: str):
+    try:
+        if not FB_PAGE_ACCESS_TOKEN:
+            print("❌ Error: FB_PAGE_ACCESS_TOKEN is missing in Environment Variables!")
+            return
+
+        # ১. আপনার রেসপন্স জেনারেটর থেকে উত্তর তৈরি করা
+        full_answer = ""
+        async for chunk in response_generator(user_text, chat_history=[]):
+            full_answer += chunk
+            
+        # ২. ফেসবুক Graph API-এর মাধ্যমে মেসেঞ্জারে উত্তর পাঠানো
+        fb_api_url = f"https://graph.facebook.com/v21.0/me/messages?access_token={FB_PAGE_ACCESS_TOKEN}"
+        
+        payload = {
+            "recipient": {"id": sender_id},
+            "message": {"text": full_answer.strip()}
+        }
+        headers = {"Content-Type": "application/json"}
+        
+        # requests.post-কে অ্যাসিনক্রোনাসলি রান করা
+        response = await asyncio.to_thread(requests.post, fb_api_url, json=payload, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"❌ Failed to send Facebook message: {response.text}")
+            
+    except Exception as e:
+        print(f"❌ Error in Facebook processing: {str(e)}")
+
+
+# ================= ১২. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ ফিক্সড লেআউট) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -177,10 +255,8 @@ def home():
             align-items: center;
         }
         
-        /* ⚡ মূল চ্যাটবক্স কন্টেইনার */
         .chatbox { 
             width: 100%;
-            /* CSS Variable দিয়ে ডাইনামিক মোবাইল হাইট হ্যান্ডেল করা */
             height: calc(var(--vh, 1vh) * 100);
             display: flex; 
             flex-direction: column; 
@@ -188,7 +264,6 @@ def home():
             background: #ffffff;
         }
 
-        /* 💻 ডেস্কটপ ভিউ-এর জন্য স্ট্যান্ডার্ড সাইজ */
         @media (min-width: 481px) {
             .chatbox {
                 max-width: 460px;
@@ -199,7 +274,6 @@ def home():
             }
         }
 
-        /* 📱 মোবাইল ভিউ-এর জন্য ফুল স্ক্রিন ফিট */
         @media (max-width: 480px) {
             .chatbox {
                 width: 100%;
@@ -253,7 +327,6 @@ def home():
             border-bottom-left-radius: 2px; 
         }
         
-        /* ⚡ নিচের ইনপুট সেকশন ফিক্স */
         .input-box { 
             display: flex; 
             border-top: 1px solid #e2e8f0; 
@@ -319,7 +392,6 @@ def home():
 const messages = document.getElementById("messages");
 let chatHistory = []; 
 
-// ⚡ মোবাইল ভিউপোর্টের আসল হাইট ক্যালকুলেট করার ফাংশন
 function resetHeight() {
     let vh = window.innerHeight * 0.01;
     document.documentElement.style.setProperty('--vh', `${vh}px`);
@@ -350,7 +422,6 @@ async function send() {
     addMessage(text, "user");
     input.value = "";
 
-    // মোবাইলে কীবোর্ড অন থাকার সময় স্ক্রোল পজিশন ঠিক রাখা
     setTimeout(() => { messages.scrollTop = messages.scrollHeight; }, 50);
 
     let botMessageDiv = addMessage("✍️ টাইপ করছে...", "bot");

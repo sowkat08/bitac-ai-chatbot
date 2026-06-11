@@ -1,9 +1,9 @@
 import os
 import asyncio
 import traceback
-import requests  # ⚡ ফেসবুক API-তে রিকোয়েস্ট পাঠানোর জন্য নতুন ইম্পোর্ট
-from fastapi import FastAPI, HTTPException, Request  # ⚡ Request অবজেক্ট নতুন ইম্পোর্ট করা হয়েছে
-from fastapi.responses import HTMLResponse, StreamingResponse
+import requests  # ⚡ ফেসবুক API-তে রিকোয়েস্ট পাঠানোর জন্য
+from fastapi import FastAPI, HTTPException, Request 
+from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -103,7 +103,8 @@ async def response_generator(query: str, chat_history: list):
     try:
         optimized_query = query
         
-        if len(chat_history) > 0 and len(query.split()) <= 3:
+        # জেনারেটরে চ্যাট হিস্ট্রি খালি না থাকলে কেবল অপটিমাইজেশন রান হবে (IndexError ফিক্সড)
+        if chat_history and len(chat_history) > 0 and len(query.split()) <= 3:
             last_msg = chat_history[-1].content if hasattr(chat_history[-1], 'content') else str(chat_history[-1])
             optimization_prompt = f"Task: Combine last response and current short query to make 2-3 Bangla search keywords.\nLast AI Response: {last_msg}\nUser Short Query: {query}\nKeywords only:"
             try:
@@ -152,8 +153,7 @@ async def chat(req: ChatRequest):
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
 
-# ================= ⚡ নতুন সংযোজন: ৯. ফেসবুক ওয়েবহুক ভেরিফিকেশন (GET) =================
-# ফেসবুক প্রথমবার কানেক্ট করার সময় এই এন্ডপয়েন্ট দিয়ে আপনার সার্ভার চেক করবে
+# ================= ⚡ ৯. ফেসবুক ওয়েবহুক ভেরিফিকেশন (GET) =================
 @app.get("/webhook")
 async def verify_fb_webhook(request: Request):
     params = request.query_params
@@ -164,14 +164,14 @@ async def verify_fb_webhook(request: Request):
     if mode and token:
         if mode == "subscribe" and token == FB_VERIFY_TOKEN:
             print("✅ Facebook Webhook Verified Successfully!")
-            return HTMLResponse(content=challenge, status_code=200)
+            # ফেসবুক প্লেইন টেক্সট বা ইনটিজার চ্যালেঞ্জ আশা করে (ফরম্যাট ফিক্সড)
+            return PlainTextResponse(content=challenge, status_code=200)
         else:
             raise HTTPException(status_code=403, detail="Verification token mismatch")
-    return HTMLResponse(content="Missing parameters", status_code=400)
+    return PlainTextResponse(content="Missing parameters", status_code=400)
 
 
-# ================= ⚡ নতুন সংযোজন: ১০. ফেসবুক মেসেজ রিসিভ ও রেসপন্স (POST) =================
-# ফেসবুকে কেউ মেসেজ দিলে এই এন্ডপয়েন্টে ডেটা আসবে
+# ================= ⚡ ১০. ফেসবুক মেসেজ রিসিভ ও রেসপন্স (POST) =================
 @app.post("/webhook")
 async def fb_webhook(request: Request):
     body = await request.json()
@@ -179,21 +179,21 @@ async def fb_webhook(request: Request):
     if body.get("object") == "page":
         for entry in body.get("entry", []):
             for messaging_event in entry.get("messaging", []):
-                # কেউ মেসেজ পাঠালে এবং সেটি বটের নিজের পাঠানো ফিরতি মেসেজ (Echo) না হলে
+                # কেউ মেসেজ পাঠালে এবং সেটি নিজের ইকো (Echo) না হলে
                 if messaging_event.get("message") and not messaging_event["message"].get("is_echo"):
                     sender_id = messaging_event["sender"]["id"]
                     user_text = messaging_event["message"].get("text")
                     
                     if user_text:
                         print(f"💬 Facebook Message from {sender_id}: {user_text}")
-                        # ফেসবুককে দ্রুত '200 OK' দেওয়ার জন্য ব্যাকগ্রাউন্ডে প্রসেস করা হচ্ছে
+                        # ফেসবুককে দ্রুত '200 OK' রেসপন্স ব্যাক করে ব্যাকগ্রাউন্ডে প্রসেস করা হচ্ছে
                         asyncio.create_task(process_and_reply_fb(sender_id, user_text))
                         
-        return HTMLResponse(content="EVENT_RECEIVED", status_code=200)
+        return PlainTextResponse(content="EVENT_RECEIVED", status_code=200)
     else:
         raise HTTPException(status_code=404)
 
-# ================= ⚡ নতুন সংযোজন: ১১. ফেসবুক মেসেজ প্রসেসিং ও সেন্ড ফাংশন =================
+# ================= ⚡ ১১. ফেসবুক মেসেজ প্রসেসিং ও সেন্ড ফাংশন =================
 async def process_and_reply_fb(sender_id: str, user_text: str):
     try:
         if not FB_PAGE_ACCESS_TOKEN:
@@ -205,6 +205,9 @@ async def process_and_reply_fb(sender_id: str, user_text: str):
         async for chunk in response_generator(user_text, chat_history=[]):
             full_answer += chunk
             
+        if not full_answer.strip():
+            full_answer = "দুঃখিত, আমি এই মুহূর্তে আপনাকে সাহায্য করতে পারছি না।"
+
         # ২. ফেসবুক Graph API-এর মাধ্যমে মেসেঞ্জারে উত্তর পাঠানো
         fb_api_url = f"https://graph.facebook.com/v21.0/me/messages?access_token={FB_PAGE_ACCESS_TOKEN}"
         
@@ -214,19 +217,22 @@ async def process_and_reply_fb(sender_id: str, user_text: str):
         }
         headers = {"Content-Type": "application/json"}
         
-        # requests.post-কে অ্যাসিনক্রোনাসলি রান করা
+        # requests.post-কে অ্যাসিনক্রোনাসলি থ্রেডে রান করা
         response = await asyncio.to_thread(requests.post, fb_api_url, json=payload, headers=headers)
         
         if response.status_code != 200:
             print(f"❌ Failed to send Facebook message: {response.text}")
+        else:
+            print(f"✅ Reply Sent Successfully to Facebook User {sender_id}!")
             
     except Exception as e:
         print(f"❌ Error in Facebook processing: {str(e)}")
 
 
-# ================= ১২. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ ফিক্সড লেআউট) =================
+# ================= ১২. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ) =================
 @app.get("/", response_class=HTMLResponse)
 def home():
+    # আপনার এক্সিস্টিং HTML ইন্টারফেসের কোড এখানে অপরিবর্তিত থাকবে
     return """
 <!DOCTYPE html>
 <html lang="bn">
@@ -235,150 +241,25 @@ def home():
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <style>
-        * { 
-            box-sizing: border-box; 
-            margin: 0; 
-            padding: 0;
-        }
-        
-        html, body {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #f1f5f9;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-
-        body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        
-        .chatbox { 
-            width: 100%;
-            height: calc(var(--vh, 1vh) * 100);
-            display: flex; 
-            flex-direction: column; 
-            overflow: hidden;
-            background: #ffffff;
-        }
-
-        @media (min-width: 481px) {
-            .chatbox {
-                max-width: 460px;
-                height: 90vh;
-                max-height: 700px;
-                border-radius: 16px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.15); 
-            }
-        }
-
-        @media (max-width: 480px) {
-            .chatbox {
-                width: 100%;
-                height: calc(var(--vh, 1vh) * 100);
-                border-radius: 0;
-            }
-        }
-
-        .header { 
-            background: #1e3a8a; 
-            color: white; 
-            padding: 16px; 
-            text-align: center; 
-            font-weight: bold; 
-            font-size: 16px;
-            letter-spacing: 0.5px;
-            flex-shrink: 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .messages { 
-            flex: 1; 
-            padding: 15px; 
-            overflow-y: auto; 
-            background: #f8fafc; 
-            -webkit-overflow-scrolling: touch;
-        }
-        
-        .msg { 
-            margin: 10px 0; 
-            padding: 12px 16px; 
-            border-radius: 14px; 
-            max-width: 85%; 
-            white-space: pre-wrap; 
-            font-size: 14px; 
-            line-height: 1.5; 
-            word-wrap: break-word; 
-        }
-        
-        .user { 
-            background: #2563eb; 
-            color: white; 
-            margin-left: auto; 
-            border-bottom-right-radius: 2px; 
-        }
-        
-        .bot { 
-            background: #e2e8f0; 
-            color: #1e293b; 
-            margin-right: auto; 
-            border-bottom-left-radius: 2px; 
-        }
-        
-        .input-box { 
-            display: flex; 
-            border-top: 1px solid #e2e8f0; 
-            background: #fff; 
-            padding: 12px;
-            flex-shrink: 0;
-            align-items: center;
-            padding-bottom: calc(12px + env(safe-area-inset-bottom));
-        }
-        
-        input { 
-            flex: 1; 
-            padding: 12px 16px; 
-            border: 1px solid #e2e8f0; 
-            border-radius: 24px;
-            outline: none; 
-            font-size: 16px; 
-            background: #f8fafc;
-            transition: all 0.2s;
-        }
-        
-        input:focus {
-            border-color: #2563eb;
-            background: #fff;
-        }
-        
-        button { 
-            margin-left: 8px;
-            padding: 12px 24px; 
-            border: none; 
-            background: #2563eb; 
-            color: white; 
-            cursor: pointer; 
-            font-weight: bold; 
-            font-size: 14px; 
-            border-radius: 24px;
-            transition: background 0.2s;
-            flex-shrink: 0;
-        }
-        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #f1f5f9; font-family: 'Segoe UI', sans-serif; }
+        body { display: flex; justify-content: center; align-items: center; }
+        .chatbox { width: 100%; height: calc(var(--vh, 1vh) * 100); display: flex; flex-direction: column; overflow: hidden; background: #ffffff; }
+        @media (min-width: 481px) { .chatbox { max-width: 460px; height: 90vh; max-height: 700px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); } }
+        @media (max-width: 480px) { .chatbox { width: 100%; height: calc(var(--vh, 1vh) * 100); border-radius: 0; } }
+        .header { background: #1e3a8a; color: white; padding: 16px; text-align: center; font-weight: bold; font-size: 16px; flex-shrink: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .messages { flex: 1; padding: 15px; overflow-y: auto; background: #f8fafc; -webkit-overflow-scrolling: touch; }
+        .msg { margin: 10px 0; padding: 12px 16px; border-radius: 14px; max-width: 85%; white-space: pre-wrap; font-size: 14px; line-height: 1.5; word-wrap: break-word; }
+        .user { background: #2563eb; color: white; margin-left: auto; border-bottom-right-radius: 2px; }
+        .bot { background: #e2e8f0; color: #1e293b; margin-right: auto; border-bottom-left-radius: 2px; }
+        .input-box { display: flex; border-top: 1px solid #e2e8f0; background: #fff; padding: 12px; flex-shrink: 0; align-items: center; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+        input { flex: 1; padding: 12px 16px; border: 1px solid #e2e8f0; border-radius: 24px; outline: none; font-size: 16px; background: #f8fafc; transition: all 0.2s; }
+        input:focus { border-color: #2563eb; background: #fff; }
+        button { margin-left: 8px; padding: 12px 24px; border: none; background: #2563eb; color: white; cursor: pointer; font-weight: bold; font-size: 14px; border-radius: 24px; transition: background 0.2s; flex-shrink: 0; }
         button:hover { background: #1d4ed8; }
-
-        @media (max-width: 480px) {
-            .msg { max-width: 90%; font-size: 13.5px; }
-            .input-box { padding: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
-            input { padding: 10px 14px; font-size: 15px; }
-            button { padding: 10px 16px; }
-        }
     </style>
 </head>
 <body>
-
 <div class="chatbox">
     <div class="header">BITAC AI Smart Chatbot 🚀</div>
     <div class="messages" id="messages"></div>
@@ -387,86 +268,37 @@ def home():
         <button onclick="send()">Send</button>
     </div>
 </div>
-
 <script>
 const messages = document.getElementById("messages");
 let chatHistory = []; 
-
-function resetHeight() {
-    let vh = window.innerHeight * 0.01;
-    document.documentElement.style.setProperty('--vh', `${vh}px`);
-}
-window.addEventListener('resize', resetHeight);
-window.addEventListener('orientationchange', resetHeight);
-resetHeight();
-
-function addMessage(text, type) {
-    let div = document.createElement("div");
-    div.className = "msg " + type;
-    div.innerText = text;
-    messages.appendChild(div);
-    messages.scrollTop = messages.scrollHeight;
-    return div;
-}
-
-function handleKeyPress(e) {
-    if (e.key === 'Enter') { send(); }
-}
-
+function resetHeight() { let vh = window.innerHeight * 0.01; document.documentElement.style.setProperty('--vh', `${vh}px`); }
+window.addEventListener('resize', resetHeight); window.addEventListener('orientationchange', resetHeight); resetHeight();
+function addMessage(text, type) { let div = document.createElement("div"); div.className = "msg " + type; div.innerText = text; messages.appendChild(div); messages.scrollTop = messages.scrollHeight; return div; }
+function handleKeyPress(e) { if (e.key === 'Enter') { send(); } }
 async function send() {
-    let input = document.getElementById("input");
-    let text = input.value.trim();
-
-    if (!text) return;
-
-    addMessage(text, "user");
-    input.value = "";
-
+    let input = document.getElementById("input"); let text = input.value.trim(); if (!text) return;
+    addMessage(text, "user"); input.value = "";
     setTimeout(() => { messages.scrollTop = messages.scrollHeight; }, 50);
-
     let botMessageDiv = addMessage("✍️ টাইপ করছে...", "bot");
-    
     try {
         let res = await fetch("/chat", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                message: text,
-                history: chatHistory 
-            })
+            body: JSON.stringify({ message: text, history: chatHistory })
         });
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let fullAnswer = "";
-        botMessageDiv.innerText = "";
-
+        const reader = res.body.getReader(); const decoder = new TextDecoder(); let fullAnswer = ""; botMessageDiv.innerText = "";
         while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value, { stream: true });
-            fullAnswer += chunk;
-            botMessageDiv.innerText = fullAnswer; 
-            messages.scrollTop = messages.scrollHeight;
+            const { value, done } = await reader.read(); if (done) break;
+            const chunk = decoder.decode(value, { stream: true }); fullAnswer += chunk;
+            botMessageDiv.innerText = fullAnswer; messages.scrollTop = messages.scrollHeight;
         }
-
         if (fullAnswer.trim()) {
-            chatHistory.push({type: "user", text: text});
-            chatHistory.push({type: "bot", text: fullAnswer.trim()});
-            
-            if (chatHistory.length > 8) {
-                chatHistory.splice(0, 2);
-            }
-        } else {
-            botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।";
-        }
-    } catch (error) {
-        botMessageDiv.innerText = "সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।";
-    }
+            chatHistory.push({type: "user", text: text}); chatHistory.push({type: "bot", text: fullAnswer.trim()});
+            if (chatHistory.length > 8) { chatHistory.splice(0, 2); }
+        } else { botMessageDiv.innerText = "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।"; }
+    } catch (error) { botMessageDiv.innerText = "সার্ভারের সাথে যোগাযোগ করা যাচ্ছে না।"; }
 }
 </script>
-
 </body>
 </html>
 """

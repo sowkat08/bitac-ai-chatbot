@@ -38,7 +38,7 @@ def is_file_already_ingested(file_path_or_url):
         print(f"⚠️ Pinecone Query Warning for {file_path_or_url}: {e}")
         return False
 
-# ================= ১. গিটহাব/লোকাল ফোল্ডারের ফাইল ট্র্যাক =================
+# ================= ১. গিটহাব ফোল্ডারের ফাইল ট্র্যাক =================
 current_active_files = set()
 if os.path.exists("bitac_files"):
     for root, _, files in os.walk("bitac_files"):
@@ -47,44 +47,41 @@ if os.path.exists("bitac_files"):
             normalized_path = full_path.replace("\\\\", "/").replace("\\", "/")
             current_active_files.add(normalized_path)
 
-print(f"📁 গিটহাব/ফোল্ডারে বর্তমানে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
+print(f"📁 গিটহাব ফোল্ডারে বর্তমানে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
 
 # ================= ২. 🔥 অটোমেটিক হার্ড ডিলিট (পাইনকোন সিঙ্ক) =================
-print("\n🔄 ডাটাবেজ অটো-সিঙ্ক রান হচ্ছে...")
+print("\n🔄 ডাটাবেজ অটো-সিঙ্ক ও ক্লিনআপ রান হচ্ছে...")
 
 try:
     ingested_sources_in_pinecone = set()
     
-    # পাইনকোনের সব ভেক্টরের আইডি পেজিনেশন করে বের করা (হাজার হাজার ডাটা থাকলেও কাজ করবে)
     for ids_list in index.list_paginated(prefix=""):
         if ids_list:
-            # আইডিগুলো দিয়ে তাদের মেটাডেটা (Source) একবারে তুলে আনা
             fetch_results = index.fetch(ids=[ids_obj.id for ids_obj in ids_list])
             for vid, data in fetch_results.get('vectors', {}).items():
                 src = data.get('metadata', {}).get('source')
                 if src:
                     ingested_sources_in_pinecone.add(src.replace("\\\\", "/").replace("\\", "/"))
 
-    # লজিক: পাইনকোনে আছে কিন্তু গিটহাবে নাই = ডিলিট করো
+    # লজিক: পাইনকোনে আছে কিন্তু গিটহাব ফোল্ডার থেকে ডিলিট হয়ে গেছে = ডাটাবেজ থেকে মুছে দাও
     files_to_delete = ingested_sources_in_pinecone - current_active_files
     
     if files_to_delete:
-        print(f"🧹 গিটহাবে নেই কিন্তু ডাটাবেজে আছে এমন ফাইল পাওয়া গেছে: {len(files_to_delete)} টি")
+        print(f"🧹 গিটহাবে নেই কিন্তু ডাটাবেজে ওল্ড ডাটা আছে: {len(files_to_delete)} টি")
         for old_file in files_to_delete:
             windows_style = old_file.replace("/", "\\")
             linux_style = old_file.replace("\\", "/")
             
             print(f"🗑️ Deleting from Pinecone: {linux_style}")
-            # মেটাডেটা ফিল্টার ম্যাচ করে পাইনকোন থেকে পার্মানেন্ট ডিলিট
             index.delete(filter={"source": {"$eq": linux_style}})
             index.delete(filter={"source": {"$eq": windows_style}})
             
-        print("✅ গিটহাব থেকে মুছে ফেলা ফাইলগুলো ডাটাবেজ থেকেও ডিলিট সফল!")
+        print("✅ গিটহাব থেকে ডিলিট করা ফাইলগুলো পাইনকোন থেকেও মুছে ফেলা হয়েছে!")
     else:
-        print("✨ ডাটাবেজ একদম ক্লিন! কোনো ফাইল ডিলিট করার প্রয়োজন হয়নি।")
+        print("✨ ডাটাবেজ ক্লিন আছে! কোনো ওল্ড ফাইল ডিলিট করার প্রয়োজন হয়নি।")
 
 except Exception as e:
-    print(f"⚠️ সিঙ্ক সতর্কতা (ইনডেক্স একদম খালি হলে এই ওয়ার্নিং আসতে পারে): {e}")
+    print(f"⚠️ সিঙ্ক সতর্কতা: {e}")
 
 # ================= ৩. নতুন ফাইল রিড ও অ্যাড করার লজিক =================
 docs = []
@@ -96,10 +93,10 @@ if os.path.exists("bitac_files"):
             normalized_path_for_source = path.replace("\\\\", "/").replace("\\", "/")
 
             if is_file_already_ingested(normalized_path_for_source):
-                print(f"⏭️  Skipping (Already Ingested): {normalized_path_for_source}")
+                print(f"Skip (Already Ingested): {normalized_path_for_source}")
                 continue
 
-            print(f"📖 Reading & Preparing New File: {normalized_path_for_source}")
+            print(f"📖 Reading New File: {normalized_path_for_source}")
             try:
                 if f.endswith(".txt"):
                     from langchain_community.document_loaders import TextLoader
@@ -129,7 +126,7 @@ if os.path.exists("bitac_files"):
                                     docs.append(Document(page_content=text, metadata={"source": normalized_path_for_source}))
                                 
                                 page_count += 1
-                                if page_count > 50: 
+                                if page_count > 100: # বড় পিডিএফে বেশি পরিমাণ ডাটা সাপোর্ট করার জন্য ১০০ পেজ লিমিট
                                     break
                     except Exception as e:
                         print(f"❌ PDF error ({f}):", e)
@@ -163,9 +160,10 @@ if os.path.exists("bitac_files"):
 
 # ================= ৪. SPLIT, EMBED & UPLOAD =================
 if not docs:
-    print("✅ কোনো নতুন ফাইল যোগ করার প্রয়োজন নেই। ডাটাবেজ আপ-টু-ডেট!")
+    print("✅ কোনো নতুন ফাইল যোগ করার প্রয়োজন নেই। ডাটাবেজ আপ-টু-ডেট!")
 else:
-    splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=120)
+    # ⚡ [উন্নত বড় ফাইল প্রসেসিং]: চাঙ্ক সাইজ বাড়িয়ে ১০০০ করা হয়েছে যাতে বড় অনুচ্ছেদ ও ডাটা টেবিল অক্ষত থাকে
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = splitter.split_documents(docs)
 
     print(f"🧠 Generating Embeddings & Uploading {len(chunks)} chunks...")
@@ -194,6 +192,7 @@ else:
                     src_metadata = batch_chunks[j].metadata.get("source", "file")
                     vid = uid(batch_texts[j], src_metadata)
                     
+                    # ⚡ [ফিক্সড লজিক]: LangChain এর রিট্রিভাল ফরম্যাটের সাথে মেলাতে 'text' কী দেওয়া হলো
                     pinecone_upserts.append((
                         vid,
                         batch_vectors[j],
@@ -205,7 +204,7 @@ else:
                 
                 index.upsert(vectors=pinecone_upserts)
                 total_uploaded += len(pinecone_upserts)
-                print(f"✅ Batch {current_batch} সফলভাবে পাইনকোনে অ্যাড হয়েছে।")
+                print(f"✅ Batch {current_batch} সফলভাবে পাইনকোনে অ্যাড হয়েছে।")
                 
                 time.sleep(2) 
                 break 
@@ -217,5 +216,5 @@ else:
                 print(f"❌ Unexpected error: {e}")
                 raise e
 
-    print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন! নতুন অ্যাড হওয়া মোট ভেক্টর: {total_uploaded}")
+    print(f"\n🎉 সফলভাবে ইনজেস্ট সম্পন্ন! নতুন ভেক্টর সংখ্যা: {total_uploaded}")
     print("🎯 পাইনকোন ডাটাবেজ এবং গিটহাব ফোল্ডার এখন ১০০% সিঙ্কড!")

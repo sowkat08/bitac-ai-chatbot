@@ -40,7 +40,6 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "bitac-chatbot")
 
-# ⚡ ফেসবুকের সিক্রেট ভেরিয়েবল (এগুলো Render-এর Environment Variables-এ সেট করে দেবেন)
 FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
 FB_VERIFY_TOKEN = os.getenv("FB_VERIFY_TOKEN", "my_secret_bitac_token") 
 
@@ -61,28 +60,30 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
+# ⚡ [উন্নত লজিক]: k=6 করা হয়েছে যাতে বড় ফাইল থেকে বেশি পরিমাণ ডাটা নিখুঁতভাবে মডেলের কাছে পৌঁছায়
 retriever = vectorstore.as_retriever(
     search_type="similarity",
-    search_kwargs={"k": 4}
+    search_kwargs={"k": 6}
 )
 
 # ================= ৪. লার্জ ল্যাঙ্গুয়েজ মডেল (LLM) =================
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.1,
+    temperature=0.2, # ক্রিয়েটিভিটি বা বানিয়ে বলার প্রবণতা কমিয়ে সত্য উত্তর দেওয়ার জন্য ০.২ ফিক্সড
     streaming=True
 )
 
-# ================= ৫. প্রম্পট সেটআপ =================
+# ================= ৫. প্রম্পট সেটআপ (ভুল উত্তর প্রতিরোধের গার্ডরেল) =================
 system_prompt = """তুমি হলে BITAC (বিটাক)-এর অফিসিয়াল এআই অ্যাসিস্ট্যান্ট। 
 
 নিয়মাবলী (কঠোরভাবে পালনীয়):
-১. নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে ইউজারের প্রশ্নের সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
-২. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
-৩. যদি কোনো তথ্যই বা প্রাসঙ্গিক কোনো লাইন Context-এ না থাকে, তবে বানিয়ে কিছু বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
-৪. ইউজার যদি আঞ্চলিক ভাষায় বা বাংলিশে (Banglish) প্রশ্ন করে, তবে তার মূল উদ্দেশ্য বুঝে Context-এর সাথে মিলিয়ে যুক্তিসঙ্গত উত্তর দাও।
-৫. উত্তর সবসময় স্পষ্ট, সহজ এবং প্রাঞ্জল বাংলায় হতে হবে।
+১. ইউজার যদি সাধারণ সম্ভাষণ (যেমন: Hi, Hello, আসসালামু আলাইকুম, কেমন আছেন, হ্যালো) জানায়, তবে ডাটাবেজে না খুঁজে নিজেই নম্রভাবে বিটাকের পক্ষ থেকে স্বাগত জানাও।
+২. ইউজার যদি জানতে চায় "বিটাক কী?" তবে সংক্ষেপে বলো: "বাংলাদেশ শিল্প কারিগরি সহায়তা কেন্দ্র (BITAC) শিল্প মন্ত্রণালয়ের অধীন একটি স্বায়ত্তশাসিত সরকারি প্রতিষ্ঠান, যা মূলত দেশের শিল্প খাতে উৎপাদনশীলতা বৃদ্ধি, দক্ষ জনশক্তি তৈরি এবং কারিগরি সহায়তা প্রদানের লক্ষ্যে কাজ করে।"
+৩. অন্যান্য সাধারণ প্রশ্নের ক্ষেত্রে নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
+৪. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
+৫. যদি কোনো তথ্যই বা প্রাসঙ্গিক কোনো লাইন Context-এ না থাকে, তবে বানিয়ে বা নিজের মন থেকে মিথ্যা কিছু বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
+৬. উত্তর সবসময় স্পষ্ট, সহজ এবং প্রাঞ্জল বাংলায় হতে হবে।
 
 Context:
 {context}"""
@@ -101,9 +102,17 @@ class ChatRequest(BaseModel):
 # ================= ७. রেসপন্স জেনারেটর =================
 async def response_generator(query: str, chat_history: list):
     try:
-        optimized_query = query
+        clean_query = query.strip().lower()
         
-        # জেনারেটরে চ্যাট হিস্ট্রি খালি না থাকলে কেবল অপটিমাইজেশন রান হবে (IndexError ফিক্সড)
+        # ⚡ [স্মার্ট গ্রিটিংস ফিল্টার]: Hi/Hello এর জন্য দ্রুত এবং নিখুঁত রেসপন্স
+        if clean_query in ["hi", "hello", "hey", "সালাম", "আসসালামু আলাইকুম", "কেমন আছেন", "হ্যালো"]:
+            greetings_prompt = f"ইউজার বলেছে: '{query}'। একজন পেশাদার ও বিনয়ী এআই অ্যাসিস্ট্যান্ট হিসেবে বিটাক (BITAC)-এর পক্ষ থেকে তাকে বাংলায় ছোট করে শুভেচ্ছা জানাও এবং কীভাবে সাহায্য করতে পারো জিজ্ঞেস করো।"
+            async for chunk in llm.astream(greetings_prompt):
+                if chunk.content:
+                    yield chunk.content
+            return
+
+        optimized_query = query
         if chat_history and len(chat_history) > 0 and len(query.split()) <= 3:
             last_msg = chat_history[-1].content if hasattr(chat_history[-1], 'content') else str(chat_history[-1])
             optimization_prompt = f"Task: Combine last response and current short query to make 2-3 Bangla search keywords.\nLast AI Response: {last_msg}\nUser Short Query: {query}\nKeywords only:"
@@ -114,9 +123,16 @@ async def response_generator(query: str, chat_history: list):
             except Exception:
                 optimized_query = query
 
+        # ১মবার চেষ্টা: অপ্টিমাইজড কোয়েরি দিয়ে বড় ডাটা খোঁজা
         docs = await asyncio.to_thread(retriever.invoke, optimized_query)
-        if not docs:
-            docs = await asyncio.to_thread(retriever.invoke, query)
+        
+        # ২য়বার চেষ্টা: ব্যাকআপ হিসেবে মূল কোয়েরি দিয়ে আবার খোঁজা (যাতে বড় ফাইল মিস না হয়)
+        if not docs or len(docs) < 3:
+            exact_docs = await asyncio.to_thread(retriever.invoke, query)
+            existing_contents = {d.page_content for d in docs}
+            for d in exact_docs:
+                if d.page_content not in existing_contents:
+                    docs.append(d)
             
         context_str = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context available."
 
@@ -152,7 +168,6 @@ async def chat(req: ChatRequest):
 
     return StreamingResponse(response_generator(req.message, chat_history), media_type="text/plain")
 
-
 # ================= ⚡ ৯. ফেসবুক ওয়েবহুক ভেরিফিকেশন (GET) =================
 @app.get("/webhook")
 async def verify_fb_webhook(request: Request):
@@ -164,12 +179,10 @@ async def verify_fb_webhook(request: Request):
     if mode and token:
         if mode == "subscribe" and token == FB_VERIFY_TOKEN:
             print("✅ Facebook Webhook Verified Successfully!")
-            # ফেসবুক প্লেইন টেক্সট বা ইনটিজার চ্যালেঞ্জ আশা করে (ফরম্যাট ফিক্সড)
             return PlainTextResponse(content=challenge, status_code=200)
         else:
             raise HTTPException(status_code=403, detail="Verification token mismatch")
     return PlainTextResponse(content="Missing parameters", status_code=400)
-
 
 # ================= ⚡ ১০. ফেসবুক মেসেজ রিসিভ ও রেসপন্স (POST) =================
 @app.post("/webhook")
@@ -179,14 +192,12 @@ async def fb_webhook(request: Request):
     if body.get("object") == "page":
         for entry in body.get("entry", []):
             for messaging_event in entry.get("messaging", []):
-                # কেউ মেসেজ পাঠালে এবং সেটি নিজের ইকো (Echo) না হলে
                 if messaging_event.get("message") and not messaging_event["message"].get("is_echo"):
                     sender_id = messaging_event["sender"]["id"]
                     user_text = messaging_event["message"].get("text")
                     
                     if user_text:
                         print(f"💬 Facebook Message from {sender_id}: {user_text}")
-                        # ফেসবুককে দ্রুত '200 OK' রেসপন্স ব্যাক করে ব্যাকগ্রাউন্ডে প্রসেস করা হচ্ছে
                         asyncio.create_task(process_and_reply_fb(sender_id, user_text))
                         
         return PlainTextResponse(content="EVENT_RECEIVED", status_code=200)
@@ -197,10 +208,9 @@ async def fb_webhook(request: Request):
 async def process_and_reply_fb(sender_id: str, user_text: str):
     try:
         if not FB_PAGE_ACCESS_TOKEN:
-            print("❌ Error: FB_PAGE_ACCESS_TOKEN is missing in Environment Variables!")
+            print("❌ Error: FB_PAGE_ACCESS_TOKEN is missing!")
             return
 
-        # ১. আপনার রেসপন্স জেনারেটর থেকে উত্তর তৈরি করা
         full_answer = ""
         async for chunk in response_generator(user_text, chat_history=[]):
             full_answer += chunk
@@ -208,7 +218,6 @@ async def process_and_reply_fb(sender_id: str, user_text: str):
         if not full_answer.strip():
             full_answer = "দুঃখিত, আমি এই মুহূর্তে আপনাকে সাহায্য করতে পারছি না।"
 
-        # ২. ফেসবুক Graph API-এর মাধ্যমে মেসেঞ্জারে উত্তর পাঠানো
         fb_api_url = f"https://graph.facebook.com/v21.0/me/messages?access_token={FB_PAGE_ACCESS_TOKEN}"
         
         payload = {
@@ -217,7 +226,6 @@ async def process_and_reply_fb(sender_id: str, user_text: str):
         }
         headers = {"Content-Type": "application/json"}
         
-        # requests.post-কে অ্যাসিনক্রোনাসলি থ্রেডে রান করা
         response = await asyncio.to_thread(requests.post, fb_api_url, json=payload, headers=headers)
         
         if response.status_code != 200:
@@ -228,11 +236,9 @@ async def process_and_reply_fb(sender_id: str, user_text: str):
     except Exception as e:
         print(f"❌ Error in Facebook processing: {str(e)}")
 
-
-# ================= ১২. ইউজার ইন্টারফেস (মোবাইল ফ্রেন্ডলি ও ১০০% রেসপন্সিভ) =================
+# ================= ১২. ইউজার ইন্টারফেস =================
 @app.get("/", response_class=HTMLResponse)
 def home():
-    # আপনার এক্সিস্টিং HTML ইন্টারফেসের কোড এখানে অপরিবর্তিত থাকবে
     return """
 <!DOCTYPE html>
 <html lang="bn">

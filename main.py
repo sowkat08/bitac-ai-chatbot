@@ -1,7 +1,7 @@
 import os
 import asyncio
 import traceback
-import requests  # ⚡ ফেসবুক API-তে রিকোয়েস্ট পাঠানোর জন্য
+import requests
 from fastapi import FastAPI, HTTPException, Request 
 from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,7 +60,7 @@ vectorstore = PineconeVectorStore(
     embedding=embeddings
 )
 
-# ⚡ [উন্নত লজিক]: k=6 করা হয়েছে যাতে বড় ফাইল থেকে বেশি পরিমাণ ডাটা নিখুঁতভাবে মডেলের কাছে পৌঁছায়
+# k=6 করা হয়েছে বড় ফাইল থেকে বেশি ডেটা নিখুঁতভাবে রিট্রিভ করার জন্য
 retriever = vectorstore.as_retriever(
     search_type="similarity",
     search_kwargs={"k": 6}
@@ -70,16 +70,16 @@ retriever = vectorstore.as_retriever(
 llm = ChatCohere(
     model="command-r-08-2024", 
     cohere_api_key=COHERE_API_KEY,
-    temperature=0.2, # ক্রিয়েটিভিটি বা বানিয়ে বলার প্রবণতা কমিয়ে সত্য উত্তর দেওয়ার জন্য ০.২ ফিক্সড
+    temperature=0.2, 
     streaming=True
 )
 
-# ================= ৫. প্রম্পট সেটআপ (ভুল উত্তর প্রতিরোধের গার্ডরেল) =================
+# ================= ৫. প্রম্পট সেটআপ =================
 system_prompt = """তুমি হলে BITAC (বিটাক)-এর অফিসিয়াল এআই অ্যাসিস্ট্যান্ট। 
 
 নিয়মাবলী (কঠোরভাবে পালনীয়):
-১. ইউজার যদি সাধারণ সম্ভাষণ (যেমন: Hi, Hello, আসসালামু আলাইকুম, কেমন আছেন, হ্যালো) জানায়, তবে ডাটাবেজে না খুঁজে নিজেই নম্রভাবে বিটাকের পক্ষ থেকে স্বাগত জানাও।
-২. ইউজার যদি জানতে চায় "বিটাক কী?" তবে সংক্ষেপে বলো: "বাংলাদেশ শিল্প কারিগরি সহায়তা কেন্দ্র (BITAC) শিল্প মন্ত্রণালয়ের অধীন একটি স্বায়ত্তশাসিত সরকারি প্রতিষ্ঠান, যা মূলত দেশের শিল্প খাতে উৎপাদনশীলতা বৃদ্ধি, দক্ষ জনশক্তি তৈরি এবং কারিগরি সহায়তা প্রদানের লক্ষ্যে কাজ করে।"
+১. ইউজার যদি সাধারণ সম্ভাষণ (যেমন: Hi, Hello, আসসালামু আলাইকুম, কেমন আছেন, হ্যালো) জানায়, তবে ডাটাবেজে না খুঁজে নিজেই নম্রভাবে বিটাকের পক্ষ থেকে স্বাগত জানাও।
+২. ইউজার যদি জানতে চায় "বিটাক কী?" তবে সংক্ষেপে বলো: "বাংলাদেশ শিল্প কারিগরি সহায়তা কেন্দ্র (BITAC) শিল্প মন্ত্রণালয়ের অধীন একটি স্বায়ত্তশাসিত সরকারি প্রতিষ্ঠান, যা মূলত দেশের শিল্প খাতে উৎপাদনশীলতা বৃদ্ধি, দক্ষ জনশক্তি তৈরি এবং কারিগরি সহায়তা প্রদানের লক্ষ্যে কাজ করে।"
 ৩. অন্যান্য সাধারণ প্রশ্নের ক্ষেত্রে নিচে দেওয়া "Context"-এর ভেতরের অফিসিয়াল তথ্যের ওপর ভিত্তি করে সরাসরি উত্তর দাও। নিজের থেকে কোনো তথ্য অনুমান বা আবিষ্কার করবে না।
 ৪. যদি প্রশ্নের উত্তর Context-এ সরাসরি না থাকে, কিন্তু প্রাসঙ্গিক (Related) কোনো তথ্য থাকে, তবে সেই প্রাসঙ্গিক তথ্যটি ব্যবহার করে সুন্দর করে বুঝিয়ে বলো।
 ৫. যদি কোনো তথ্যই বা প্রাসঙ্গিক কোনো লাইন Context-এ না থাকে, তবে বানিয়ে বা নিজের মন থেকে মিথ্যা কিছু বলবে না। সরাসরি বলবে: "দুঃখিত, এই বিষয়ে আমার কাছে সঠিক তথ্য নেই।"
@@ -104,9 +104,8 @@ async def response_generator(query: str, chat_history: list):
     try:
         clean_query = query.strip().lower()
         
-        # ⚡ [স্মার্ট গ্রিটিংস ফিল্টার]: Hi/Hello এর জন্য দ্রুত এবং নিখুঁত রেসপন্স
         if clean_query in ["hi", "hello", "hey", "সালাম", "আসসালামু আলাইকুম", "কেমন আছেন", "হ্যালো"]:
-            greetings_prompt = f"ইউজার বলেছে: '{query}'। একজন পেশাদার ও বিনয়ী এআই অ্যাসিস্ট্যান্ট হিসেবে বিটাক (BITAC)-এর পক্ষ থেকে তাকে বাংলায় ছোট করে শুভেচ্ছা জানাও এবং কীভাবে সাহায্য করতে পারো জিজ্ঞেস করো।"
+            greetings_prompt = f"ইউজার বলেছে: '{query}'। একজন পেশাদার ও বিনয়ী এআই অ্যাসিস্ট্যান্ট হিসেবে বিটাক (BITAC)-এর পক্ষ থেকে তাকে বাংলায় ছোট করে শুভেচ্ছা জানাও এবং কীভাবে সাহায্য করতে পারো জিজ্ঞেস করো।"
             async for chunk in llm.astream(greetings_prompt):
                 if chunk.content:
                     yield chunk.content
@@ -123,10 +122,8 @@ async def response_generator(query: str, chat_history: list):
             except Exception:
                 optimized_query = query
 
-        # ১মবার চেষ্টা: অপ্টিমাইজড কোয়েরি দিয়ে বড় ডাটা খোঁজা
         docs = await asyncio.to_thread(retriever.invoke, optimized_query)
         
-        # ২য়বার চেষ্টা: ব্যাকআপ হিসেবে মূল কোয়েরি দিয়ে আবার খোঁজা (যাতে বড় ফাইল মিস না হয়)
         if not docs or len(docs) < 3:
             exact_docs = await asyncio.to_thread(retriever.invoke, query)
             existing_contents = {d.page_content for d in docs}

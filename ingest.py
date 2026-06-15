@@ -49,36 +49,36 @@ if os.path.exists("bitac_files"):
 
 print(f"📁 গিটহাব ফোল্ডারে বর্তমানে মোট একটিভ ফাইল আছে: {len(current_active_files)} টি")
 
-# ================= ২. 🔥 অটোমেটিক হার্ড ডিলিট (পাইনকোন সিঙ্ক) =================
+# ================= ২. 🔥 ফিক্সড অটোমেটিক হার্ড ডিলিট (পাইনকোন সিঙ্ক) =================
 print("\n🔄 ডাটাবেজ অটো-সিঙ্ক ও ক্লিনআপ রান হচ্ছে...")
 
 try:
     ingested_sources_in_pinecone = set()
     
-    for ids_list in index.list_paginated(prefix=""):
-        if ids_list:
-            fetch_results = index.fetch(ids=[ids_obj.id for ids_obj in ids_list])
-            for vid, data in fetch_results.get('vectors', {}).items():
-                src = data.get('metadata', {}).get('source')
-                if src:
-                    ingested_sources_in_pinecone.add(src.replace("\\\\", "/").replace("\\", "/"))
+    # পাইনকোন থেকে মেটাডাটা ট্র্যাকিং ফেচ পদ্ধতি
+    dummy_vector = [0.1] * 1024
+    query_res = index.query(
+        vector=dummy_vector,
+        top_k=100, 
+        include_metadata=True
+    )
+    
+    for match in query_res.get('matches', []):
+        src = match.get('metadata', {}).get('source')
+        if src:
+            ingested_sources_in_pinecone.add(src.replace("\\\\", "/").replace("\\", "/"))
 
-    # লজিক: পাইনকোনে আছে কিন্তু গিটহাব ফোল্ডার থেকে ডিলিট হয়ে গেছে = ডাটাবেজ থেকে মুছে দাও
+    # ওল্ড ফাইল আইডেন্টিফিকেশন লজিক
     files_to_delete = ingested_sources_in_pinecone - current_active_files
     
     if files_to_delete:
         print(f"🧹 গিটহাবে নেই কিন্তু ডাটাবেজে ওল্ড ডাটা আছে: {len(files_to_delete)} টি")
         for old_file in files_to_delete:
-            windows_style = old_file.replace("/", "\\")
-            linux_style = old_file.replace("\\", "/")
-            
-            print(f"🗑️ Deleting from Pinecone: {linux_style}")
-            index.delete(filter={"source": {"$eq": linux_style}})
-            index.delete(filter={"source": {"$eq": windows_style}})
-            
-        print("✅ গিটহাব থেকে ডিলিট করা ফাইলগুলো পাইনকোন থেকেও মুছে ফেলা হয়েছে!")
+            print(f"🗑️ Deleting from Pinecone: {old_file}")
+            index.delete(filter={"source": {"$eq": old_file}})
+        print("✅ ওল্ড ফাইলগুলো পাইনকোন থেকে সফলভাবে মুছে ফেলা হয়েছে!")
     else:
-        print("✨ ডাটাবেজ ক্লিন আছে! কোনো ওল্ড ফাইল ডিলিট করার প্রয়োজন হয়নি।")
+        print("✨ প্রথম ধাপে কোনো ওল্ড ফাইল ডিলিট করার প্রয়োজন হয়নি।")
 
 except Exception as e:
     print(f"⚠️ সিঙ্ক সতর্কতা: {e}")
@@ -126,7 +126,7 @@ if os.path.exists("bitac_files"):
                                     docs.append(Document(page_content=text, metadata={"source": normalized_path_for_source}))
                                 
                                 page_count += 1
-                                if page_count > 100: # বড় পিডিএফে বেশি পরিমাণ ডাটা সাপোর্ট করার জন্য ১০০ পেজ লিমিট
+                                if page_count > 100:
                                     break
                     except Exception as e:
                         print(f"❌ PDF error ({f}):", e)
@@ -160,9 +160,8 @@ if os.path.exists("bitac_files"):
 
 # ================= ৪. SPLIT, EMBED & UPLOAD =================
 if not docs:
-    print("✅ কোনো নতুন ফাইল যোগ করার প্রয়োজন নেই। ডাটাবেজ আপ-টু-ডেট!")
+    print("✅ কোনো নতুন ফাইল যোগ করার প্রয়োজন নেই। ডাটাবেজ আপ-টু-ডেট!")
 else:
-    # ⚡ [উন্নত বড় ফাইল প্রসেসিং]: চাঙ্ক সাইজ বাড়িয়ে ১০০০ করা হয়েছে যাতে বড় অনুচ্ছেদ ও ডাটা টেবিল অক্ষত থাকে
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = splitter.split_documents(docs)
 
@@ -192,7 +191,6 @@ else:
                     src_metadata = batch_chunks[j].metadata.get("source", "file")
                     vid = uid(batch_texts[j], src_metadata)
                     
-                    # ⚡ [ফিক্সড লজিক]: LangChain এর রিট্রিভাল ফরম্যাটের সাথে মেলাতে 'text' কী দেওয়া হলো
                     pinecone_upserts.append((
                         vid,
                         batch_vectors[j],
@@ -204,7 +202,7 @@ else:
                 
                 index.upsert(vectors=pinecone_upserts)
                 total_uploaded += len(pinecone_upserts)
-                print(f"✅ Batch {current_batch} সফলভাবে পাইনকোনে অ্যাড হয়েছে।")
+                print(f"✅ Batch {current_batch} সফলভাবে পাইনকোনে অ্যাড হয়েছে।")
                 
                 time.sleep(2) 
                 break 
